@@ -21,8 +21,8 @@ Windows/Linux进入虚拟环境：.venv/Scripts/activate、source .venv/bin/acti
 以下nuitka打包命令是打包成一个独立运行的程序，同时不显示cmd控制窗口、清理打包生成的临时文件、指定产品名称、指定产品版本。
 对于 PySide6 程序，建议加上 --nofollow-import-to=tkinter 减小打包体积，因为 PySide6 有时会误带入不必要的 Tkinter 依赖，
 同时要 pip install zstandard 来压缩--onefile模式生成可执行文件的大小。但是用nuitka打包成单个文件容易被识别为病毒，所以用nuitka的话不建议--onefile模式
-Windows nuitka打包：python -m nuitka --standalone --onefile --remove-output --enable-plugin=pyside6 --windows-console-mode=disable --nofollow-import-to=tkinter --product-name=文本对比工具 --product-version=1.2 main.py
-Linux nuitka打包：python -m nuitka --standalone --onefile --remove-output --enable-plugin=pyside6 --nofollow-import-to=tkinter --product-name=文本对比工具 --product-version=1.2 main.py
+Windows nuitka打包：python -m nuitka --standalone --onefile --remove-output --enable-plugin=pyside6 --windows-console-mode=disable --nofollow-import-to=tkinter --product-name=网络工程师工具 --product-version=1.2 main.py
+Linux nuitka打包：python -m nuitka --standalone --onefile --remove-output --enable-plugin=pyside6 --nofollow-import-to=tkinter --product-name=网络工程师工具 --product-version=1.2 main.py
 
 Windows/Linux pyinstaller打包：pyinstaller -F -w main.py
 """
@@ -38,13 +38,14 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPlainTextEdit, QTextEdit, QFileDialog, QLabel, QSplitter, QStatusBar,
-    QMessageBox, QDialog, QLineEdit, QCheckBox, QPushButton, QGridLayout, QSplitterHandle
+    QMessageBox, QDialog, QLineEdit, QCheckBox, QPushButton, QGridLayout, QSplitterHandle,
+    QListWidget, QListWidgetItem, QStackedWidget, QSizePolicy
 )
 
 # --- 语言配置字典 ---
 TRANSLATIONS = {
     "zh": {
-        "win_title": "文本对比工具",
+        "win_title": "网络工程师工具",
         "menu_file": "文件",
         "action_open_left": "打开左侧文件",
         "action_open_right": "打开右侧文件",
@@ -89,6 +90,11 @@ TRANSLATIONS = {
         "msg_index": "第 {idx}/{total} 项",
         "msg_replace_done": "已成功替换 {count} 处",
         "regex_error": "正则语法错误: {err}",
+        "nav_text_compare": "文本对比",
+        "nav_ip_calculator": "IP地址计算",
+        "nav_batch_ping": "批量ping",
+        "nav_network_ip_set": "网卡IP地址设置",
+        "placeholder_page": "该功能正在开发中，敬请期待。",
         "about_msg": ("作者: zhuhezhang\n"
                       "时间: 2026年3月22日\n"
                       "版本: V1.2\n"
@@ -105,7 +111,7 @@ TRANSLATIONS = {
                       "  8. 支持切换中英文界面。")
     },
     "en": {
-        "win_title": "Text Comparison Tool",
+        "win_title": "Network Engineer Tools",
         "menu_file": "File",
         "action_open_left": "Open Left File",
         "action_open_right": "Open Right File",
@@ -150,6 +156,11 @@ TRANSLATIONS = {
         "msg_index": "Item {idx}/{total}",
         "msg_replace_done": "Successfully replaced {count} occurrence(s)",
         "regex_error": "Regex Error: {err}",
+        "nav_text_compare": "Text Compare",
+        "nav_ip_calculator": "IP Calculator",
+        "nav_batch_ping": "Batch Ping",
+        "nav_network_ip_set": "NIC IP Settings",
+        "placeholder_page": "This feature is under development, please stay tuned.",
         "about_msg": ("Author: zhuhezhang\n"
                       "Date: March 22, 2026\n"
                       "Version: V1.2\n"
@@ -268,6 +279,7 @@ class TextCompareTool(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         menubar = self.menuBar()  # 菜单栏（文件、编辑、比较、视图、语言、帮助）
 
         # 文件菜单
@@ -349,13 +361,56 @@ class TextCompareTool(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
-        vertical_splitter = ResetSplitter(Qt.Vertical, weights=[1, 2])  # 垂直分割器（设为 1:2 权重）
-        input_splitter = ResetSplitter(Qt.Horizontal, weights=[1, 1])  # 上方输入区域（设为 1:1 权重）
+        # 左侧导航栏
+        self.nav_widget = QWidget()
+        self.nav_widget.setMinimumWidth(180)
+        self.nav_widget.setMaximumWidth(350)
+        self.nav_layout = QVBoxLayout(self.nav_widget)
+        self.nav_layout.setContentsMargins(10, 10, 5, 10)
+        self.nav_layout.setSpacing(8)
+        self.nav_layout.setAlignment(Qt.AlignTop)
+        self.nav_buttons = {}
+        self.nav_button_order = [
+            "nav_text_compare",
+            "nav_ip_calculator",
+            "nav_batch_ping",
+            "nav_network_ip_set",
+        ]
+        for item in self.nav_button_order:
+            btn = QPushButton("")
+            btn.setCheckable(True)
+            btn.setAutoDefault(False)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.clicked.connect(lambda checked=False, key=item: self._on_nav_button_clicked(key))  # noqa
+            self.nav_layout.addWidget(btn)
+            self.nav_buttons[item] = btn
+
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.stacked_widget = QStackedWidget()
+        self.content_layout.addWidget(self.stacked_widget)
+        self.nav_splitter = QSplitter(Qt.Horizontal)
+        self.nav_splitter.setChildrenCollapsible(False)
+        self.nav_splitter.setHandleWidth(6)
+        self.nav_splitter.addWidget(self.nav_widget)
+        self.nav_splitter.addWidget(self.content_widget)
+        self.nav_splitter.setSizes([210, 1090])
+        main_layout.addWidget(self.nav_splitter)
+
+        # 文本对比页
+        self.compare_page = QWidget()
+        self.compare_layout = QVBoxLayout(self.compare_page)
+        self.compare_layout.setContentsMargins(0, 0, 0, 0)
+
+        vertical_splitter = ResetSplitter(Qt.Vertical, weights=[1, 2])
+        input_splitter = ResetSplitter(Qt.Horizontal, weights=[1, 1])
         self.text_left_input = LineNumberPlainTextEdit(self)
         self.text_right_input = LineNumberPlainTextEdit(self)
         input_splitter.addWidget(self.text_left_input)
         input_splitter.addWidget(self.text_right_input)
-        result_splitter = ResetSplitter(Qt.Horizontal, weights=[1, 1])  # 下方结果区域（设为 1:1 权重，水平分割、只读）
+
+        result_splitter = ResetSplitter(Qt.Horizontal, weights=[1, 1])
         self.text_left_result = LineNumberPlainTextEdit(self)
         self.text_right_result = LineNumberPlainTextEdit(self)
         for editor in (self.text_left_result, self.text_right_result):
@@ -365,16 +420,50 @@ class TextCompareTool(QMainWindow):
 
         vertical_splitter.addWidget(input_splitter)
         vertical_splitter.addWidget(result_splitter)
-        # 注意：使用 ResetSplitter 后，不再需要单独调用 setStretchFactor，
-        # 因为我们的 reset_layout 会接管比例逻辑。
-        # 但为了初始化显示正确，可以先手动调用一次重置。
-        vertical_splitter.setStretchFactor(0, 1)  # 上下高度所占比例为1：2
+        vertical_splitter.setStretchFactor(0, 1)
         vertical_splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(vertical_splitter)
+        self.compare_layout.addWidget(vertical_splitter)
+        self.stacked_widget.addWidget(self.compare_page)
 
-        self._connect_focus_signals()  # 焦点信号连接，用于确认查找替换对象
-        self._sync_scrollbars()  # 下方结果区域滚动条同步
-        self._retranslate_ui()  # 初次加载翻译
+        # 其他功能页（占位）
+        self.placeholder_pages = []
+        for _ in range(3):
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            label = QLabel("")
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label)
+            self.placeholder_pages.append(label)
+            self.stacked_widget.addWidget(page)
+
+        self.nav_buttons["nav_text_compare"].setChecked(True)
+        self.stacked_widget.setCurrentIndex(0)
+        self._update_nav_menus()
+        self._connect_focus_signals()
+        self._sync_scrollbars()
+        self._retranslate_ui()
+
+    def _on_nav_button_clicked(self, nav_key: str):
+        """切换左侧导航对应的主界面"""
+        index_map = {
+            "nav_text_compare": 0,
+            "nav_ip_calculator": 1,
+            "nav_batch_ping": 2,
+            "nav_network_ip_set": 3,
+        }
+        self.stacked_widget.setCurrentIndex(index_map.get(nav_key, 0))
+        self._update_nav_menus()
+        for key, btn in self.nav_buttons.items():
+            btn.setChecked(key == nav_key)
+
+    def _update_nav_menus(self):
+        """按当前导航页面显示专属菜单：只有文本对比页展示文件/编辑/比较菜单。"""
+        if not hasattr(self, "stacked_widget"):
+            return
+        is_compare_page = self.stacked_widget.currentIndex() == 0
+        for menu in (self.menu_file, self.menu_edit, self.menu_compare):
+            menu.menuAction().setVisible(is_compare_page)
+            menu.setEnabled(is_compare_page)
 
     def _switch_language(self, lang_code: str):
         """切换语言
@@ -424,6 +513,10 @@ class TextCompareTool(QMainWindow):
             text_input.viewport().update()  # 解决切换中英文时，文本输入框的placeholder的值无法正常显示，需要主界面失去焦点时才能刷新的问题
 
         self.status_bar.showMessage(tr["status_ready"])
+
+        # 导航栏按钮翻译
+        for item, btn in self.nav_buttons.items():
+            btn.setText(tr[item])
 
     def _center(self):
         """使主界面在屏幕居中"""
@@ -1153,6 +1246,7 @@ class FindReplaceDialog(QDialog):
                 msg = tr["msg_not_found"].format(text=self.find_edit.text())
             else:
                 msg = tr["msg_index"].format(idx=index, total=total)
+           
             if hasattr(self.text_compare_tool, 'status_bar'):
                 self.text_compare_tool.status_bar.showMessage(msg, 5000)
 
@@ -1160,8 +1254,10 @@ class FindReplaceDialog(QDialog):
         """根据编辑器有效性及只读状态、正则表达式是否错误更新替换按钮"""
         if self.editor is not None:  # 若编辑器为只读（结果区）或不存在，则禁用全部替换、替换按钮及替换输入框、标签
             enable = not self.editor.isReadOnly()
+       
         else:
             enable = False
+
         self.replace_btn.setEnabled(enable)
         self.replace_all_btn.setEnabled(enable)
         self.replace_label.setEnabled(enable)
@@ -1183,7 +1279,6 @@ class FindReplaceDialog(QDialog):
         else:  # 窗口隐藏/关闭时：清除高亮、清除选中状态
             if self.editor and hasattr(self.editor, 'highlight_search_text'):
                 self.editor.highlight_search_text("", False, False, False)  # 传入空字符串清除所有搜索高亮，保留 Diff 高亮
-            if hasattr(self.text_compare_tool, 'status_bar'):  # 清除状态栏信息
                 self.text_compare_tool.status_bar.clearMessage()
             cursor = self.editor.textCursor()
             cursor.clearSelection()  # 清除选中状态
