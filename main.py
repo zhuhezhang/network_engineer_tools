@@ -1,19 +1,9 @@
 """
 @Time        : 2026/02/12
 @Author      : zhuhezhang
-@Version     : v1
-@Description : 基于 PySide6 和 difflib 实现的文本差异对比工具。
-                1.所有编辑区均显示行号，结果区滚动条会同步滚动，便于对比查看；
-                2.支持从多种编码格式的文本文件导入对比文本，编辑文本不会同步至文件保存；
-                3.支持字体缩放、比较结果支持字符级高亮显示（红色-删除、绿色-新增、黄色-修改）；
-                4.可以通过拖动分割条调整四个文本区域的大小，双击分割条后可恢复至默认比例；
-                5.除了菜单栏显示的快捷键，还支持 Ctrl/Cmd 鼠标滚轮缩放字体；
-                6.支持搜索替换，搜索替换对象为焦点所在。选中文本时打开搜索替换框，选中的内容会自动粘贴到搜素框，搜索替换结果会显示在下方的状态栏。
-                  当焦点在搜索输入框时按回车会执行查找下一个，焦点在替换输入框时按回车会执行替换；
-                7.查找替换模式支持大小写匹配、全词匹配、正则表达式，使用正则表达式并且输入的正则表达式错误时，错误原因会显示在状态栏，搜索框文本
-                  同步变红。
-@Update      : 2026/03/09 V1.1 优化搜索替换体验。当输入的正则表达式错误，搜索替换的按钮和菜单均为变为不可用
-             : 2026/03/22 V1.2 支持切换中英文界面
+@Description : 包含文本对比、IP地址计算、批量ping、网卡IP地址设置功能的网络工程师运维工具集
+
+
 Linux安装pip和venv虚拟环境：sudo apt-get install python3-pip、sudo apt install python3.13-venv
 Linux创建虚拟环境：python3 -m venv .venv
 Windows/Linux进入虚拟环境：.venv/Scripts/activate、source .venv/bin/activate
@@ -27,7 +17,7 @@ Linux nuitka打包：python -m nuitka --standalone --onefile --remove-output --e
 Windows/Linux pyinstaller打包：pyinstaller -F -w main.py
 """
 from sys import exit, argv, platform
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import  QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, 
@@ -39,7 +29,11 @@ from PySide6.QtWidgets import (
     QPushButton, 
     QSplitterHandle, 
     QStackedWidget, 
-    QSizePolicy
+    QSizePolicy,
+    QLineEdit,
+    QComboBox,
+    QAbstractButton,
+    QDialog,
 )
 from text_compare_page import TextComparePage
 from ip_calculator_page import IpCalculatorPage
@@ -106,6 +100,9 @@ if platform == "darwin":
     DEFAULT_FONT_SIZE = 15
 MIN_FONT_SIZE = 5  # 最小字体大小
 MAX_FONT_SIZE = 25  # 最大字体大小
+GLOBAL_ZOOM_MIN = 0.4
+GLOBAL_ZOOM_MAX = 4.0
+GLOBAL_ZOOM_STEP = 1.2
 
 
 # 视口理解：想象你面前有一张巨大的世界地图（这就是文档），但你手上只有一个小相框（这就是视口）。
@@ -187,8 +184,11 @@ class TextCompareTool(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_lang = "zh"
+        self.global_zoom = 1.0
+        self._install_global_zoom_filter()
         self.resize(1300, 800)
         self._init_ui()
+        self._apply_global_zoom(1.0)
         self._center()
 
     def _init_ui(self):
@@ -248,13 +248,13 @@ class TextCompareTool(QMainWindow):
 
         self.menu_view = menubar.addMenu("")
         self.action_zoom_in = QAction("", self)
-        self.action_zoom_in.triggered.connect(lambda: self.compare_page.zoom_in())
+        self.action_zoom_in.triggered.connect(self.zoom_in)
         self.action_zoom_in.setShortcut("Ctrl+=")
         self.action_zoom_out = QAction("", self)
-        self.action_zoom_out.triggered.connect(lambda: self.compare_page.zoom_out())
+        self.action_zoom_out.triggered.connect(self.zoom_out)
         self.action_zoom_out.setShortcut(QKeySequence.ZoomOut)
         self.action_zoom_reset = QAction("", self)
-        self.action_zoom_reset.triggered.connect(lambda: self.compare_page._zoom_reset())
+        self.action_zoom_reset.triggered.connect(self._zoom_reset)
         self.action_zoom_reset.setShortcut("Ctrl+0")
         self.menu_view.addAction(self.action_zoom_in)
         self.menu_view.addAction(self.action_zoom_out)
@@ -324,6 +324,82 @@ class TextCompareTool(QMainWindow):
         self._update_nav_menus()
         self._retranslate_ui()
 
+    def _install_global_zoom_filter(self):
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            elif delta < 0:
+                self.zoom_out()
+            return True
+        return super().eventFilter(obj, event)
+
+    def _apply_global_zoom(self, scale: float):
+        if scale <= 0:
+            scale = 1.0
+        target_scale = min(GLOBAL_ZOOM_MAX, max(GLOBAL_ZOOM_MIN, scale))
+
+        dialog_windows = set()
+        if hasattr(self, "compare_page") and hasattr(self.compare_page, "find_dialog"):
+            dialog_windows.add(self.compare_page.find_dialog)
+        for top_widget in QApplication.topLevelWidgets():
+            if isinstance(top_widget, QDialog):
+                dialog_windows.add(top_widget)
+                dialog_windows.update(top_widget.findChildren(QWidget))
+
+        widgets = [self] + self.findChildren(QWidget)
+        for widget in widgets:
+            if widget in dialog_windows or isinstance(widget, QDialog):
+                continue
+            if widget.window() in dialog_windows:
+                continue
+
+            try:
+                font = widget.font()
+            except Exception:
+                continue
+
+            point_size = font.pointSizeF() or font.pointSize() or 10
+            if not hasattr(widget, "_network_zoom_base_size"):
+                widget._network_zoom_base_size = point_size
+            base_size = getattr(widget, "_network_zoom_base_size", point_size)
+            new_size = max(6.0, base_size * target_scale)
+            if abs(new_size - (font.pointSizeF() or font.pointSize())) > 0.01:
+                font.setPointSizeF(new_size)
+                widget.setFont(font)
+
+            is_layout_container = isinstance(widget, (QWidget, QMainWindow)) and not isinstance(widget, (QLineEdit, QComboBox, QAbstractButton))
+            if is_layout_container:
+                if hasattr(widget, "update_line_number_width"):
+                    widget.update_line_number_width()
+                continue
+
+            try:
+                base_hint_h = widget.sizeHint().height()
+            except Exception:
+                base_hint_h = 0
+            if base_hint_h > 0:
+                if not hasattr(widget, "_network_zoom_base_hint_height"):
+                    widget._network_zoom_base_hint_height = base_hint_h
+                base_hint_h = getattr(widget, "_network_zoom_base_hint_height", base_hint_h)
+                scaled_hint_h = max(16, int(base_hint_h * target_scale))
+                widget.setMinimumHeight(scaled_hint_h)
+
+            if hasattr(widget, "update_line_number_width"):
+                widget.update_line_number_width()
+
+        if hasattr(self, "compare_page") and hasattr(self.compare_page, "find_dialog"):
+            self.compare_page.find_dialog.setFixedSize(self.compare_page.find_dialog.size())
+            self.compare_page.find_dialog.setMinimumSize(self.compare_page.find_dialog.size())
+            self.compare_page.find_dialog.setMaximumSize(self.compare_page.find_dialog.size())
+
+        self.global_zoom = target_scale
+
     def _on_nav_button_clicked(self, nav_key: str):
         index_map = {
             "nav_text_compare": 0,
@@ -389,16 +465,14 @@ class TextCompareTool(QMainWindow):
         self.status_bar.showMessage("Network Engineer Tools")
 
     def zoom_in(self):
-        if hasattr(self, "compare_page"):
-            self.compare_page.zoom_in()
+        self._apply_global_zoom(self.global_zoom * GLOBAL_ZOOM_STEP)
 
     def zoom_out(self):
-        if hasattr(self, "compare_page"):
-            self.compare_page.zoom_out()
+        self._apply_global_zoom(self.global_zoom / GLOBAL_ZOOM_STEP)
 
     def _zoom_reset(self):
-        if hasattr(self, "compare_page"):
-            self.compare_page._zoom_reset()
+        self._apply_global_zoom(1.0)
+    
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from sys import platform
 from typing import List, Optional
 
 from charset_normalizer import from_bytes
-from PySide6.QtCore import Qt, Signal, QRegularExpression, QTimer
+from PySide6.QtCore import Qt, Signal, QRegularExpression, QTimer, QSize
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -398,6 +398,12 @@ class FindReplaceDialog(QDialog):
 
         self._update_button_state()
         self.retranslate_ui()
+        self.setFixedSize(self.sizeHint().expandedTo(QSize(420, 180)))
+
+    def lock_size(self):
+        self.setFixedSize(self.size())
+        self.setMinimumSize(self.size())
+        self.setMaximumSize(self.size())
 
     def retranslate_ui(self):
         tr = TRANSLATIONS[self.text_compare_tool.current_lang]
