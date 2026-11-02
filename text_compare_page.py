@@ -379,6 +379,11 @@ class FindReplaceDialog(QDialog):
         grid.addLayout(btn_layout, 3, 0, 1, 4)
         self.setLayout(grid)
 
+        grid.setContentsMargins(10, 10, 10, 10)
+        grid.setSpacing(10)
+        options_layout.setSpacing(10)
+        btn_layout.setSpacing(10)
+
         self.default_palette = self.find_edit.palette()
         self.error_palette = self.find_edit.palette()
         self.error_palette.setColor(self.error_palette.ColorRole.Text, QColor(220, 50, 50))
@@ -397,14 +402,7 @@ class FindReplaceDialog(QDialog):
 
         self._update_button_state()
         self.retranslate_ui()
-        self.resize(520, 180)
-        # self.setMinimumSize(420, 180)
-        # self.setFixedSize(self.sizeHint().expandedTo(QSize(420, 180)))
-
-    # def lock_size(self):
-    #     self.setFixedSize(self.size())
-    #     self.setMinimumSize(self.size())
-    #     self.setMaximumSize(self.size())
+        self.resize(520, 140)
 
     def retranslate_ui(self):
         tr = TRANSLATIONS[self.text_compare_tool.current_lang]

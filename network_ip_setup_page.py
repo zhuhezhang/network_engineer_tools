@@ -13,10 +13,6 @@ class NetworkIpSetupPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel("网卡 IP 地址设置")
-        title.setStyleSheet("font-size: 20px; font-weight: 600;")
-        layout.addWidget(title)
-
         form = QFormLayout()
         self.interface_edit = QLineEdit("en0")
         self.ip_edit = QLineEdit("192.168.1.10")

@@ -13,10 +13,6 @@ class IpCalculatorPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel("IP 地址计算")
-        title.setStyleSheet("font-size: 20px; font-weight: 600;")
-        layout.addWidget(title)
-
         form = QFormLayout()
         self.ip_edit = QLineEdit("192.168.1.10")
         self.mask_edit = QLineEdit("255.255.255.0")

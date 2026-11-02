@@ -14,10 +14,6 @@ class BatchPingPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel("批量 Ping")
-        title.setStyleSheet("font-size: 20px; font-weight: 600;")
-        layout.addWidget(title)
-
         self.host_input = QTextEdit()
         self.host_input.setPlaceholderText("每行一个 IP / 域名\n例如：\n8.8.8.8\nwww.baidu.com")
         layout.addWidget(self.host_input)
