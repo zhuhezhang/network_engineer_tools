@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 from difflib import SequenceMatcher
 from sys import platform
 from typing import List, Optional
-
 from charset_normalizer import from_bytes
 from PySide6.QtCore import Qt, Signal, QRegularExpression, QTimer, QSize
 from PySide6.QtGui import (
@@ -147,7 +145,7 @@ MAX_FONT_SIZE = 25
 
 
 class ResetHandle(QSplitterHandle):
-    """支持双击分割条重置比例。"""
+    """支持双击分割条重置比例"""
 
     def mouseDoubleClickEvent(self, event):
         s = self.splitter()
@@ -156,7 +154,7 @@ class ResetHandle(QSplitterHandle):
 
 
 class ResetSplitter(QSplitter):
-    """支持比例重置的分割器。"""
+    """支持比例重置的分割器"""
 
     def __init__(self, orientation, weights=None, parent=None):
         super().__init__(orientation, parent)
@@ -292,7 +290,7 @@ class LineNumberPlainTextEdit(QPlainTextEdit):
 
 
 class LineNumberArea(QWidget):
-    """行号区域。"""
+    """行号区域"""
 
     def __init__(self, editor: LineNumberPlainTextEdit):
         super().__init__(editor)
@@ -323,7 +321,7 @@ class LineNumberArea(QWidget):
 
 
 class FindReplaceDialog(QDialog):
-    """查找/替换对话框。"""
+    """查找/替换对话框"""
 
     def __init__(self, text_compare_tool):
         super().__init__(text_compare_tool)
@@ -333,6 +331,7 @@ class FindReplaceDialog(QDialog):
         self.editor: Optional[LineNumberPlainTextEdit] = None
         self.current_matches: List[QTextCursor] = []
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
+        self.setSizeGripEnabled(True)
         self.regex_error_flag = False
 
         self.find_label = QLabel("查找(&N):")
@@ -398,12 +397,14 @@ class FindReplaceDialog(QDialog):
 
         self._update_button_state()
         self.retranslate_ui()
-        self.setFixedSize(self.sizeHint().expandedTo(QSize(420, 180)))
+        self.resize(520, 180)
+        # self.setMinimumSize(420, 180)
+        # self.setFixedSize(self.sizeHint().expandedTo(QSize(420, 180)))
 
-    def lock_size(self):
-        self.setFixedSize(self.size())
-        self.setMinimumSize(self.size())
-        self.setMaximumSize(self.size())
+    # def lock_size(self):
+    #     self.setFixedSize(self.size())
+    #     self.setMinimumSize(self.size())
+    #     self.setMaximumSize(self.size())
 
     def retranslate_ui(self):
         tr = TRANSLATIONS[self.text_compare_tool.current_lang]

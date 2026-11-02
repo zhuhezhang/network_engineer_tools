@@ -178,7 +178,7 @@ class ResetSplitter(QSplitter):
         self.setSizes(new_sizes)
 
 
-class TextCompareTool(QMainWindow):
+class NetworkEngineerTools(QMainWindow):
     """应用主窗口框架"""
 
     def __init__(self):
@@ -350,15 +350,14 @@ class TextCompareTool(QMainWindow):
         for top_widget in QApplication.topLevelWidgets():
             if isinstance(top_widget, QDialog):
                 dialog_windows.add(top_widget)
-                dialog_windows.update(top_widget.findChildren(QWidget))
 
+        saved_dialog_sizes = {dialog: dialog.size() for dialog in dialog_windows}
         widgets = [self] + self.findChildren(QWidget)
-        for widget in widgets:
-            if widget in dialog_windows or isinstance(widget, QDialog):
-                continue
-            if widget.window() in dialog_windows:
-                continue
+        for dialog in dialog_windows:
+            widgets.append(dialog)
+            widgets.extend(dialog.findChildren(QWidget))
 
+        for widget in widgets:
             try:
                 font = widget.font()
             except Exception:
@@ -393,10 +392,8 @@ class TextCompareTool(QMainWindow):
             if hasattr(widget, "update_line_number_width"):
                 widget.update_line_number_width()
 
-        if hasattr(self, "compare_page") and hasattr(self.compare_page, "find_dialog"):
-            self.compare_page.find_dialog.setFixedSize(self.compare_page.find_dialog.size())
-            self.compare_page.find_dialog.setMinimumSize(self.compare_page.find_dialog.size())
-            self.compare_page.find_dialog.setMaximumSize(self.compare_page.find_dialog.size())
+        for dialog, size in saved_dialog_sizes.items():
+            dialog.resize(size)
 
         self.global_zoom = target_scale
 
@@ -477,6 +474,6 @@ class TextCompareTool(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(argv)
-    window = TextCompareTool()
+    window = NetworkEngineerTools()
     window.show()
     exit(app.exec())
