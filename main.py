@@ -59,6 +59,8 @@ TRANSLATIONS = {
         "action_zoom_in": "放大",
         "action_zoom_out": "缩小",
         "action_zoom_reset": "重置缩放",
+        "action_pin_top": "置顶",
+        "action_unpin_top": "取消置顶",
         "menu_lang": "语言/Language",
         "menu_help": "帮助",
         "action_about": "关于",
@@ -84,6 +86,8 @@ TRANSLATIONS = {
         "action_zoom_in": "Zoom In",
         "action_zoom_out": "Zoom Out",
         "action_zoom_reset": "Zoom Reset",
+        "action_pin_top": "Pin to Top",
+        "action_unpin_top": "Unpin",
         "menu_lang": "Language/语言",
         "menu_help": "Help",
         "action_about": "About",
@@ -256,9 +260,14 @@ class NetworkEngineerTools(QMainWindow):
         self.action_zoom_reset = QAction("", self)
         self.action_zoom_reset.triggered.connect(self._zoom_reset)
         self.action_zoom_reset.setShortcut("Ctrl+0")
+        self.action_pin_top = QAction("", self)
+        self.action_pin_top.setCheckable(True)
+        self.action_pin_top.toggled.connect(self._toggle_always_on_top)
         self.menu_view.addAction(self.action_zoom_in)
         self.menu_view.addAction(self.action_zoom_out)
         self.menu_view.addAction(self.action_zoom_reset)
+        self.menu_view.addSeparator()
+        self.menu_view.addAction(self.action_pin_top)
 
         self.menu_lang = menubar.addMenu("")
         self.action_lang_zh = QAction("简体中文", self)
@@ -442,6 +451,7 @@ class NetworkEngineerTools(QMainWindow):
         self.action_zoom_in.setText(tr["action_zoom_in"])
         self.action_zoom_out.setText(tr["action_zoom_out"])
         self.action_zoom_reset.setText(tr["action_zoom_reset"])
+        self._update_pin_action_text()
 
         self.menu_lang.setTitle(tr["menu_lang"])
         self.menu_help.setTitle(tr["menu_help"])
@@ -469,6 +479,22 @@ class NetworkEngineerTools(QMainWindow):
 
     def _zoom_reset(self):
         self._apply_global_zoom(1.0)
+
+    def _update_pin_action_text(self):
+        tr = TRANSLATIONS[self.current_lang]
+        if self.action_pin_top.isChecked():
+            self.action_pin_top.setText(tr["action_unpin_top"])
+        else:
+            self.action_pin_top.setText(tr["action_pin_top"])
+
+    def _toggle_always_on_top(self, checked: bool):
+        flags = self.windowFlags()
+        if checked:
+            self.setWindowFlags(flags | Qt.WindowType.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(flags & ~Qt.WindowType.WindowStaysOnTopHint)
+        self.show()
+        self._update_pin_action_text()
     
 
 
