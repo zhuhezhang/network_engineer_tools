@@ -200,37 +200,43 @@ def format_network_list(networks: List[dict]) -> str:
 
 def parse_ip_or_cidr(token: str) -> IPv4Network:
     """
-    Parse a single IP or CIDR token.
+    Parse a single line: bare IP, CIDR, or "IP dotted-mask".
     Bare IP (no mask) defaults to /32.
+    Examples: 192.168.0.1 / 192.168.0.1/24 / 192.168.0.1 255.255.255.0
     """
     token = token.strip()
     if not token:
         raise ValueError("地址不能为空")
-    if "/" not in token:
-        token = f"{token}/32"
+    parts = token.split()
+    if len(parts) == 2:
+        ip_part, mask_part = parts
+        if "/" in ip_part:
+            raise ValueError(f"无效的 IP/网段: {token}")
+        try:
+            return IPv4Network(f"{ip_part}/{mask_part}", strict=False)
+        except ValueError as exc:
+            raise ValueError(f"无效的 IP/网段: {token}") from exc
+    if len(parts) != 1:
+        raise ValueError(f"无效的 IP/网段: {token}")
+    entry = parts[0]
+    if "/" not in entry:
+        entry = f"{entry}/32"
     try:
-        return IPv4Network(token, strict=False)
+        return IPv4Network(entry, strict=False)
     except ValueError as exc:
-        raise ValueError(f"无效的 IP/网段: {token}") from exc
+        raise ValueError(f"无效的 IP/网段: {entry}") from exc
 
 
 def parse_ip_cidr_list(text: str) -> List[IPv4Network]:
     """
-    Parse multiple IPs/CIDRs separated by newlines, commas, semicolons, or spaces.
+    Parse multiple IPs/CIDRs, one entry per line (newline-separated only).
+    Each line may be a bare IP, CIDR, or "IP dotted-mask".
     """
-    cleaned = (
-        text.replace("，", ",")
-        .replace("；", ";")
-        .replace("\r", "\n")
-        .replace(";", "\n")
-        .replace(",", "\n")
-    )
     networks: List[IPv4Network] = []
-    for line in cleaned.splitlines():
-        for part in line.split():
-            part = part.strip()
-            if part:
-                networks.append(parse_ip_or_cidr(part))
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        line = line.strip()
+        if line:
+            networks.append(parse_ip_or_cidr(line))
     if not networks:
         raise ValueError("请至少输入一个 IP 地址或地址段")
     return networks
@@ -678,16 +684,20 @@ class IpCalculatorPage(QWidget):
         box, form = _make_section("计算最小包含地址范围")
 
         note = QLabel(
-            "输入若干 IP 或 CIDR（无掩码默认 /32），"
-            "支持换行、逗号或空格分隔，计算能包含它们的最小网段"
+            "每行输入一个 IP、CIDR 或「IP 地址 子网掩码」（无掩码默认 /32），"
+            "仅支持换行分隔，计算能包含它们的最小网段"
         )
         note.setWordWrap(True)
         form.addRow(note)
 
         self.covering_input = QTextEdit()
-        self.covering_input.setPlaceholderText("例如：\n1.1.1.1\n1.1.1.1/24")
+        self.covering_input.setPlaceholderText(
+            "例如：\n192.168.0.0\n192.168.0.9/29\n192.0.0.1 255.255.255.0"
+        )
         self.covering_input.setFixedHeight(90)
-        self.covering_input.setPlainText("1.1.1.1\n1.1.1.1/24")
+        self.covering_input.setPlainText(
+            "192.168.0.0\n192.168.0.9/29\n192.0.0.1 255.255.255.0"
+        )
         form.addRow(self.covering_input)
 
         calc = QPushButton("开始计算")
@@ -721,7 +731,9 @@ class IpCalculatorPage(QWidget):
             self._show_calc_error(exc)
 
     def _clear_covering(self):
-        self.covering_input.setPlainText("1.1.1.1\n1.1.1.1/24")
+        self.covering_input.setPlainText(
+            "192.168.0.0\n192.168.0.9/29\n192.0.0.1 255.255.255.0"
+        )
         self.covering_result.clear()
 
     # ----- 3. 根据主机数划分子网 -----
