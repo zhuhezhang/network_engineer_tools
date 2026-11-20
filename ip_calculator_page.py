@@ -325,7 +325,7 @@ SECTION_STYLE = """
 QFrame#sectionBox {
     background-color: #f7f8fa;
     border: 1px solid #c5cad3;
-    border-radius: 8px;
+    border-radius: 0px;
 }
 """
 
@@ -333,7 +333,7 @@ RESULT_STYLE = """
 QFrame#resultBox {
     background-color: #ffffff;
     border: 1px solid #d0d5dd;
-    border-radius: 4px;
+    border-radius: 0px;
 }
 """
 
@@ -362,7 +362,7 @@ class ResultBox(QFrame):
 
         self._form = QFormLayout()
         self._form.setContentsMargins(0, 0, 0, 0)
-        self._form.setHorizontalSpacing(12)
+        self._form.setHorizontalSpacing(10)
         self._form.setVerticalSpacing(2)
         self._form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
         self._form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -483,7 +483,7 @@ def _make_section(title: str):
     box.setObjectName("sectionBox")
     box.setStyleSheet(SECTION_STYLE)
     outer = QVBoxLayout(box)
-    outer.setContentsMargins(12, 12, 12, 12)
+    outer.setContentsMargins(10, 10, 10, 10)
     outer.setSpacing(8)
 
     heading = QLabel(title)
@@ -530,9 +530,8 @@ class IpCalculatorPage(QWidget):
         container = QWidget()
         scroll.setWidget(container)
         layout = QVBoxLayout(container)
-        # 左右贴边；上下与左侧导航栏边距一致（nav_layout top/bottom = 10）
-        layout.setContentsMargins(0, 10, 0, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
 
         # 左右两列独立堆叠，高度互不影响（不按行对齐抬高）
         columns = QHBoxLayout()
@@ -583,7 +582,7 @@ class IpCalculatorPage(QWidget):
         mask_row.setSpacing(4)
         self.net_ip_mask_row = OctetRow(("255", "255", "255", "0"))
         mask_row.addWidget(self.net_ip_mask_row)
-        mask_row.addSpacing(12)
+        mask_row.addSpacing(10)
         mask_row.addWidget(QLabel("/"))
         self.net_ip_prefix = QSpinBox()
         self.net_ip_prefix.setRange(0, 32)
@@ -748,7 +747,7 @@ class IpCalculatorPage(QWidget):
         mask_row.setSpacing(4)
         self.vlsm_mask_row = OctetRow(("255", "255", "255", "0"))
         mask_row.addWidget(self.vlsm_mask_row)
-        mask_row.addSpacing(12)
+        mask_row.addSpacing(10)
         mask_row.addWidget(QLabel("/"))
         self.vlsm_prefix = QSpinBox()
         self.vlsm_prefix.setRange(0, 32)

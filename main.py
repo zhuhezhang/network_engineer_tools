@@ -289,7 +289,7 @@ class NetworkEngineerTools(QMainWindow):
         self.nav_widget.setMinimumWidth(180)
         self.nav_widget.setMaximumWidth(350)
         self.nav_layout = QVBoxLayout(self.nav_widget)
-        self.nav_layout.setContentsMargins(10, 10, 5, 10)
+        self.nav_layout.setContentsMargins(10, 10, 4, 10)
         self.nav_layout.setSpacing(8)
         self.nav_layout.setAlignment(Qt.AlignTop)
 
