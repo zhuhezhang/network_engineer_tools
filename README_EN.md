@@ -13,6 +13,7 @@ This is a text difference comparison tool implemented based on PySide6 and diffl
 - **Interface Adjustment**: You can adjust the size of the four text areas by dragging the split bar, and double-clicking the split bar restores the default ratio.
 - **Search and Replace**: Supports search and replace functions, including case matching, whole word matching, and regular expressions.
 - **Interface Language**: Supports switching between Chinese and English interfaces.
+- **Batch Ping**: Continuously ping multiple IPs/hostnames on an interval, with live success/fail, loss, and latency stats; concurrency is adjustable (default 50, range 1–500); failed rows highlighted; columns are strictly equal-width when the page opens; only after you manually resize a column does the last column stretch to fill any right-side gap.
 
 
 ## Dev
@@ -20,7 +21,7 @@ This is a text difference comparison tool implemented based on PySide6 and diffl
 1. Ensure Python 3.8+ and pip are installed.
 2. Install dependencies:
    ```bash
-   pip install PySide6 charset-normalizer
+   pip install PySide6 charset-normalizer icmplib
    ```
 3. Run the program:
    ```bash

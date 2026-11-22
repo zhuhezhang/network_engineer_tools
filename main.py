@@ -462,6 +462,10 @@ class NetworkEngineerTools(QMainWindow):
 
         if hasattr(self.compare_page, "retranslate_ui"):
             self.compare_page.retranslate_ui()
+        if hasattr(self.ip_page, "retranslate_ui"):
+            self.ip_page.retranslate_ui()
+        if hasattr(self.ping_page, "retranslate_ui"):
+            self.ping_page.retranslate_ui()
 
     def _center(self):
         screen = self.screen().availableGeometry()
