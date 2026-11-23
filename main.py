@@ -16,8 +16,13 @@ Linux nuitka打包：python -m nuitka --standalone --onefile --remove-output --e
 
 Windows/Linux pyinstaller打包：pyinstaller -F -w main.py
 """
-from sys import exit, argv, platform
-from PySide6.QtCore import Qt, QEvent
+import os
+import shlex
+import subprocess
+from sys import exit, argv, executable, platform
+
+import subprocess
+from PySide6.QtCore import Qt, QEvent, QTimer
 from PySide6.QtGui import  QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, 
@@ -67,7 +72,7 @@ TRANSLATIONS = {
         "nav_text_compare": "文本对比",
         "nav_ip_calculator": "IP地址计算",
         "nav_batch_ping": "批量ping",
-        "nav_network_ip_set": "网卡IP地址设置",
+        "nav_network_ip_set": "网卡IP地址配置",
     },
     "en": {
         "win_title": "Network Engineer Tools",
@@ -94,7 +99,7 @@ TRANSLATIONS = {
         "nav_text_compare": "Text Compare",
         "nav_ip_calculator": "IP Calculator",
         "nav_batch_ping": "Batch Ping",
-        "nav_network_ip_set": "NIC IP Settings",
+        "nav_network_ip_set": "NIC IP Configuration",
     },
 }
 
@@ -466,6 +471,8 @@ class NetworkEngineerTools(QMainWindow):
             self.ip_page.retranslate_ui()
         if hasattr(self.ping_page, "retranslate_ui"):
             self.ping_page.retranslate_ui()
+        if hasattr(self.network_page, "retranslate_ui"):
+            self.network_page.retranslate_ui()
 
     def _center(self):
         screen = self.screen().availableGeometry()
@@ -502,8 +509,59 @@ class NetworkEngineerTools(QMainWindow):
     
 
 
+def relaunch_as_admin(arguments):
+    """通过 UAC 重新启动当前程序，并返回是否成功提交了提权请求。"""
+    if platform != "win32":
+        return False
+    try:
+        import ctypes
+        import sys
+
+        if getattr(sys, "frozen", False):
+            file_name = sys.executable
+            parameters = subprocess.list2cmdline(list(arguments))
+        else:
+            file_name = sys.executable
+            script = os.path.abspath(__file__)
+            parameters = subprocess.list2cmdline([script, *arguments])
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", file_name, parameters, os.path.dirname(file_name), 1
+        )
+        return result > 32
+    except (OSError, AttributeError):
+        return False
+
+
+def _arg_value(marker):
+    if marker not in argv:
+        return None
+    index = argv.index(marker)
+    if index + 1 >= len(argv):
+        return None
+    return argv[index + 1]
+
+
+def _elevated_config_from_args():
+    payload = _arg_value("--elevated-config")
+    if not payload:
+        return None
+    try:
+        import base64
+        import json
+
+        return json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
 if __name__ == "__main__":
     app = QApplication(argv)
     window = NetworkEngineerTools()
+    if _arg_value("--page") == "network_ip":
+        window._on_nav_button_clicked("nav_network_ip_set")
+    elevated_config = _elevated_config_from_args()
+    if elevated_config:
+        window.network_page.apply_elevated_config(elevated_config)
     window.show()
     exit(app.exec())
+
