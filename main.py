@@ -16,9 +16,11 @@ Linux nuitka打包：python -m nuitka --standalone --onefile --remove-output --e
 
 Windows/Linux pyinstaller打包：pyinstaller -F -w main.py
 """
+import json
 import os
 import shlex
 import subprocess
+from pathlib import Path
 from sys import exit, argv, executable, platform
 
 import subprocess
@@ -112,6 +114,21 @@ MAX_FONT_SIZE = 25  # 最大字体大小
 GLOBAL_ZOOM_MIN = 0.4
 GLOBAL_ZOOM_MAX = 4.0
 GLOBAL_ZOOM_STEP = 1.2
+CONFIG_FILE_NAME = "config.json"
+DEFAULT_SIDEBAR_WIDTH = 210
+MIN_SIDEBAR_WIDTH = 180
+MAX_SIDEBAR_WIDTH = 350
+
+
+def _config_file_path():
+    """返回当前用户的数据配置文件路径。"""
+    if platform == "win32":
+        base_dir = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    elif platform == "darwin":
+        base_dir = str(Path.home() / "Library" / "Application Support")
+    else:
+        base_dir = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base_dir) / "network_engineer_tools" / CONFIG_FILE_NAME
 
 
 # 视口理解：想象你面前有一张巨大的世界地图（这就是文档），但你手上只有一个小相框（这就是视口）。
@@ -192,7 +209,10 @@ class NetworkEngineerTools(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.current_lang = "zh"
+        self._settings = self._load_settings()
+        saved_language = self._settings.get("language", "zh")
+        self.current_lang = saved_language if saved_language in TRANSLATIONS else "zh"
+        self.sidebar_width = self._validated_sidebar_width(self._settings.get("sidebar_width"))
         self.global_zoom = 1.0
         self._install_global_zoom_filter()
         self.resize(1300, 800)
@@ -330,13 +350,52 @@ class NetworkEngineerTools(QMainWindow):
         self.nav_splitter.setHandleWidth(6)
         self.nav_splitter.addWidget(self.nav_widget)
         self.nav_splitter.addWidget(self.content_widget)
-        self.nav_splitter.setSizes([210, 1090])
+        self.nav_splitter.setSizes([self.sidebar_width, max(1, self.width() - self.sidebar_width)])
+        self.nav_splitter.splitterMoved.connect(self._on_sidebar_width_changed)
 
         main_layout.addWidget(self.nav_splitter)
         self.nav_buttons["nav_text_compare"].setChecked(True)
         self.stacked_widget.setCurrentIndex(0)
         self._update_nav_menus()
         self._retranslate_ui()
+
+    @staticmethod
+    def _validated_sidebar_width(width):
+        try:
+            width = int(width)
+        except (TypeError, ValueError):
+            return DEFAULT_SIDEBAR_WIDTH
+        return max(MIN_SIDEBAR_WIDTH, min(MAX_SIDEBAR_WIDTH, width))
+
+    @staticmethod
+    def _load_settings():
+        config_path = _config_file_path()
+        try:
+            with config_path.open("r", encoding="utf-8") as config_file:
+                settings = json.load(config_file)
+            return settings if isinstance(settings, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_settings(self):
+        if hasattr(self, "nav_splitter") and self.nav_splitter.sizes():
+            self.sidebar_width = self._validated_sidebar_width(self.nav_splitter.sizes()[0])
+        self._settings.update({"language": self.current_lang, "sidebar_width": self.sidebar_width})
+        config_path = _config_file_path()
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with config_path.open("w", encoding="utf-8") as config_file:
+                json.dump(self._settings, config_file, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _on_sidebar_width_changed(self, position, index):
+        del position, index
+        self._save_settings()
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     def _install_global_zoom_filter(self):
         app = QApplication.instance()
@@ -430,7 +489,10 @@ class NetworkEngineerTools(QMainWindow):
             menu.setEnabled(is_compare_page)
 
     def _switch_language(self, lang_code: str):
+        if lang_code not in TRANSLATIONS:
+            return
         self.current_lang = lang_code
+        self._save_settings()
         self._retranslate_ui()
         if hasattr(self.compare_page, "find_dialog"):
             self.compare_page.find_dialog.retranslate_ui()
