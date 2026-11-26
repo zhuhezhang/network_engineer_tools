@@ -1,4 +1,4 @@
-"""网卡信息页：查看本机网卡 IPv4 配置（含自动/手动来源），并支持修改配置。"""
+"""网卡信息页：查看本机网卡 IPv4 配置（含自动/手动来源），并支持修改配置"""
 from __future__ import annotations
 
 import base64
@@ -13,8 +13,9 @@ import subprocess
 import sys
 import tempfile
 from ipaddress import IPv4Address, IPv4Network
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget,
     QApplication,
@@ -25,13 +26,23 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QComboBox,
-    QGroupBox,
+    QInputDialog,
     QMessageBox,
 )
 
 PAGE_TRANSLATIONS = {
     "zh": {
         "label_interface": "网卡名称",
+        "label_saved_profile": "已保存配置模板",
+        "profile_none": "请选择已保存配置模板",
+        "btn_save_profile": "保存当前配置模板",
+        "btn_delete_profile": "删除当前配置模板",
+        "profile_name_title": "保存配置模板",
+        "profile_name_prompt": "请输入该套配置模板的名称",
+        "profile_delete_title": "确认删除配置模板",
+        "profile_delete_prompt": "确定删除配置模板「{name}」吗？",
+        "profile_name_exists": "该配置模板名称已存在，请使用其他名称",
+        "profile_empty_fields": "请先填写要保存的 IP/DNS 配置",
         "label_ip_mode": "IP 获取方式",
         "label_dns_mode": "DNS 获取方式",
         "label_ip": "IP 地址",
@@ -48,34 +59,44 @@ PAGE_TRANSLATIONS = {
         "not_configured": "未配置",
         "unknown_interface": "未知网卡",
         "dns_placeholder": "多个 DNS 用逗号分隔",
-        "hint_select": "选择网卡以查看当前网络配置。",
+        "hint_select": "选择网卡以查看当前网络配置",
         "hint_loading": "正在读取网卡配置...",
-        "hint_loaded": "上方为系统当前配置；在「修改配置」中调整后可点击「应用配置」写入。",
-        "hint_empty": "未检测到可用的 IPv4 网卡。",
+        "hint_loaded": "当前配置已载入。调整需要修改的项目后点击「应用配置」写入",
+        "hint_empty": "未检测到可用的 IPv4 网卡",
         "hint_error": "读取网卡配置失败：{err}",
-        "err_no_interface": "请先选择网卡。",
+        "err_no_interface": "请先选择网卡",
         "err_invalid_ip": "无效的 IP 地址：{value}",
         "err_invalid_mask": "无效的子网掩码：{value}",
         "err_invalid_gateway": "无效的网关地址：{value}",
         "err_invalid_dns": "无效的 DNS 服务器：{value}",
-        "err_dns_required": "手动设置 DNS 时请至少填写一个 DNS 服务器。",
-        "err_not_windows": "当前系统暂不支持写入网卡配置。",
-        "err_admin": "修改网络配置需要管理员权限，请以管理员身份重新运行本程序。",
-        "err_root_required": "需要 root 权限：请以 sudo 启动本程序，或安装 pkexec 后重试。",
-        "err_no_connection": "未找到网卡「{name}」对应的 NetworkManager 连接，无法写入配置。",
-        "err_no_service": "未找到网卡「{name}」对应的 macOS 网络服务，无法写入配置。",
-        "err_write": "写入配置失败（退出码 {code}）。\n\n{output}",
+        "err_dns_required": "手动设置 DNS 时请至少填写一个 DNS 服务器",
+        "err_not_windows": "当前系统暂不支持写入网卡配置",
+        "err_admin": "修改网络配置需要管理员权限，请以管理员身份重新运行本程序",
+        "err_root_required": "需要 root 权限：请以 sudo 启动本程序，或安装 pkexec 后重试",
+        "err_no_connection": "未找到网卡「{name}」对应的 NetworkManager 连接，无法写入配置",
+        "err_no_service": "未找到网卡「{name}」对应的 macOS 网络服务，无法写入配置",
+        "err_write": "写入配置失败（退出码 {code}）\n\n{output}",
         "elevate_title": "需要管理员权限",
         "elevate_text": "修改网络配置需要管理员权限。是否以管理员身份重新启动程序（将弹出 UAC 提示）？",
-        "elevate_failed": "未能启动管理员进程，可能已取消 UAC 授权。",
+        "elevate_failed": "未能启动管理员进程，可能已取消 UAC 授权",
         "hint_applying": "正在应用配置...",
         "confirm_title": "确认修改",
         "confirm_text": "即将修改网卡「{name}」的配置：\n\n{summary}\n\n应用过程中网络可能短暂中断，是否继续？",
         "success_title": "配置已应用",
-        "success_text": "网卡「{name}」的配置已提交。若信息未立即刷新，请稍后点击「刷新」。",
+        "success_text": "网卡「{name}」的配置已提交。若信息未立即刷新，请稍后点击「刷新」",
     },
     "en": {
         "label_interface": "Interface",
+        "label_saved_profile": "Saved Configuration Template",
+        "profile_none": "Select a saved configuration template",
+        "btn_save_profile": "Save Current Configuration Template",
+        "btn_delete_profile": "Delete Current Configuration Template",
+        "profile_name_title": "Save Current Configuration Template",
+        "profile_name_prompt": "Enter a name for this configuration template",
+        "profile_delete_title": "Confirm Delete Template",
+        "profile_delete_prompt": "Delete configuration template \"{name}\"?",
+        "profile_name_exists": "That configuration template name already exists. Please use another name",
+        "profile_empty_fields": "Enter the IP/DNS settings to save first",
         "label_ip_mode": "IP Assignment",
         "label_dns_mode": "DNS Assignment",
         "label_ip": "IP Address",
@@ -92,33 +113,31 @@ PAGE_TRANSLATIONS = {
         "not_configured": "Not configured",
         "unknown_interface": "Unknown interface",
         "dns_placeholder": "Separate multiple DNS servers with commas",
-        "hint_select": "Select an interface to view its current network configuration.",
+        "hint_select": "Select an interface to view its current network configuration",
         "hint_loading": "Reading interface configuration...",
-        "hint_loaded": "Above are the current system settings. Adjust them under \"Modify Configuration\" and click Apply.",
-        "hint_empty": "No IPv4 interfaces detected.",
+        "hint_loaded": "Current settings are loaded. Adjust the fields you want to change and click Apply",
+        "hint_empty": "No IPv4 interfaces detected",
         "hint_error": "Failed to read interface configuration: {err}",
-        "err_no_interface": "Please select an interface first.",
+        "err_no_interface": "Please select an interface first",
         "err_invalid_ip": "Invalid IP address: {value}",
         "err_invalid_mask": "Invalid subnet mask: {value}",
         "err_invalid_gateway": "Invalid gateway address: {value}",
         "err_invalid_dns": "Invalid DNS server: {value}",
-        "err_dns_required": "Enter at least one DNS server when using manual DNS.",
-        "err_not_windows": "Writing interface settings is not supported on this system.",
-        "err_admin": "Changing network settings requires administrator privileges. Please restart this program as administrator.",
-        "err_root_required": "Root privileges are required. Run this program with sudo, or install pkexec and retry.",
-        "err_no_connection": "No NetworkManager connection found for \"{name}\"; cannot apply settings.",
-        "err_no_service": "No macOS network service found for \"{name}\"; cannot apply settings.",
-        "err_write": "Failed to write configuration (exit code {code}).\n\n{output}",
+        "err_dns_required": "Enter at least one DNS server when using manual DNS",
+        "err_not_windows": "Writing interface settings is not supported on this system",
+        "err_admin": "Changing network settings requires administrator privileges. Please restart this program as administrator",
+        "err_root_required": "Root privileges are required. Run this program with sudo, or install pkexec and retry",
+        "err_no_connection": "No NetworkManager connection found for \"{name}\"; cannot apply settings",
+        "err_no_service": "No macOS network service found for \"{name}\"; cannot apply settings",
+        "err_write": "Failed to write configuration (exit code {code})\n\n{output}",
         "elevate_title": "Administrator Required",
-        "elevate_text": "Changing network settings requires administrator privileges. "
-        "Restart the program as administrator (a UAC prompt will appear)?",
-        "elevate_failed": "Failed to start the elevated process. The UAC authorization may have been cancelled.",
+        "elevate_text": "Changing network settings requires administrator privileges. Restart the program as administrator (a UAC prompt will appear)?",
+        "elevate_failed": "Failed to start the elevated process. The UAC authorization may have been cancelled",
         "hint_applying": "Applying configuration...",
         "confirm_title": "Confirm Changes",
-        "confirm_text": "About to change the configuration of \"{name}\":\n\n{summary}\n\n"
-        "The network may briefly drop during the change. Continue?",
+        "confirm_text": "About to change the configuration of \"{name}\":\n\n{summary}\n\nThe network may briefly drop during the change. Continue?",
         "success_title": "Configuration Applied",
-        "success_text": "Configuration for \"{name}\" has been submitted. If the info is not updated yet, click Refresh later.",
+        "success_text": "Configuration for \"{name}\" has been submitted. If the info is not updated yet, click Refresh later",
     },
 }
 
@@ -133,7 +152,7 @@ _CREATE_NO_WINDOW = 0x08000000
 
 
 class ConfigError(ValueError):
-    """携带翻译键的输入校验错误。"""
+    """携带翻译键的输入校验错误"""
 
     def __init__(self, key: str, **params):
         self.key = key
@@ -141,8 +160,32 @@ class ConfigError(ValueError):
         super().__init__(key)
 
 
+class _InterfaceLoadWorker(QObject):
+    loaded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, page):
+        super().__init__()
+        self.page = page
+
+    @Slot()
+    def run(self):
+        try:
+            if platform.system() == "Windows":
+                interfaces = self.page._windows_interfaces()
+            else:
+                interfaces = self.page._unix_interfaces()
+        except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError) as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.loaded.emit(interfaces)
+        finally:
+            self.finished.emit()
+
+
 class NetworkIpSetupPage(QWidget):
-    """查看并修改本机网卡 IPv4 地址、掩码、网关和 DNS 配置。"""
+    """查看并修改本机网卡 IPv4 地址、掩码、网关和 DNS 配置"""
 
     def __init__(self, main_window=None):
         super().__init__()
@@ -153,6 +196,8 @@ class NetworkIpSetupPage(QWidget):
         self._last_error = ""
         self._elevated_pending = None
         self._elevated_iface = ""
+        self._load_thread = None
+        self._load_worker = None
         self._init_ui()
         self.retranslate_ui()
 
@@ -162,8 +207,135 @@ class NetworkIpSetupPage(QWidget):
             self._loaded = True
             # 延迟到界面完成首帧绘制后再执行 PowerShell，避免窗口卡在启动阶段
             self._state = "loading"
+            self._set_controls_enabled(False)
             self.hint_label.setText(self._tr("hint_loading"))
             QTimer.singleShot(0, self._load_interfaces)
+
+    @staticmethod
+    def _profile_file_path() -> Path:
+        if sys.platform == "win32":
+            base_dir = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        elif sys.platform == "darwin":
+            base_dir = str(Path.home() / "Library" / "Application Support")
+        else:
+            base_dir = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        return Path(base_dir) / "network_engineer_tools" / "ip_profiles.json"
+
+    @staticmethod
+    def _parse_profiles(raw):
+        try:
+            profiles = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
+            profiles = {}
+        return profiles if isinstance(profiles, dict) else {}
+
+    def _load_profiles(self):
+        profile_path = self._profile_file_path()
+        try:
+            with profile_path.open("r", encoding="utf-8") as profile_file:
+                profiles = self._parse_profiles(profile_file.read())
+        except (OSError, json.JSONDecodeError):
+            profiles = {}
+        self._profiles = profiles
+        self._refresh_profile_combo()
+
+    def _save_profiles(self, profiles=None):
+        if profiles is None:
+            profiles = self._profiles
+        profile_path = self._profile_file_path()
+        try:
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            with profile_path.open("w", encoding="utf-8") as profile_file:
+                json.dump(profiles, profile_file, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _refresh_profile_combo(self):
+        selected = self.saved_profile_combo.currentData() if hasattr(self, "saved_profile_combo") else None
+        self.saved_profile_combo.blockSignals(True)
+        self.saved_profile_combo.clear()
+        self.saved_profile_combo.addItem(self._tr("profile_none"), None)
+        for name in sorted(self._profiles, key=str.casefold):
+            self.saved_profile_combo.addItem(name, name)
+        index = self.saved_profile_combo.findData(selected) if selected else 0
+        self.saved_profile_combo.setCurrentIndex(max(index, 0))
+        self.saved_profile_combo.blockSignals(False)
+        self.delete_profile_btn.setEnabled(bool(self.saved_profile_combo.currentData()))
+
+    def _on_profile_selected(self, _index=None):
+        self.delete_profile_btn.setEnabled(bool(self.saved_profile_combo.currentData()))
+        name = self.saved_profile_combo.currentData()
+        profile = self._profiles.get(name) if name else None
+        if not profile:
+            return
+        self.config_ip_mode_combo.setCurrentIndex(
+            0 if profile.get("ip_mode") == "dhcp" else 1
+        )
+        self.config_dns_mode_combo.setCurrentIndex(
+            0 if profile.get("dns_mode") == "dhcp" else 1
+        )
+        self.cfg_ip_edit.setText(profile.get("ip", ""))
+        self.cfg_mask_edit.setText(profile.get("mask", ""))
+        self.cfg_gateway_edit.setText(profile.get("gateway", ""))
+        self.cfg_dns_edit.setText(profile.get("dns", ""))
+        self._update_config_state()
+
+    def _save_profile(self):
+        current_name = self.saved_profile_combo.currentData()
+        name, accepted = QInputDialog.getText(
+            self,
+            self._tr("profile_name_title"),
+            self._tr("profile_name_prompt"),
+            QLineEdit.EchoMode.Normal,
+            current_name or "",
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        if name in self._profiles and name != current_name:
+            QMessageBox.warning(self, "", self._tr("profile_name_exists"))
+            return
+        profile = {
+            "ip_mode": self.config_ip_mode_combo.currentData(),
+            "ip": self.cfg_ip_edit.text().strip(),
+            "mask": self.cfg_mask_edit.text().strip(),
+            "gateway": self.cfg_gateway_edit.text().strip(),
+            "dns_mode": self.config_dns_mode_combo.currentData(),
+            "dns": self.cfg_dns_edit.text().strip(),
+        }
+        if profile["ip_mode"] == "static" and not profile["ip"]:
+            QMessageBox.warning(self, "", self._tr("profile_empty_fields"))
+            return
+        if profile["dns_mode"] == "static" and not profile["dns"]:
+            QMessageBox.warning(self, "", self._tr("profile_empty_fields"))
+            return
+        if current_name and current_name != name:
+            self._profiles.pop(current_name, None)
+        self._profiles[name] = profile
+        self._save_profiles()
+        self._refresh_profile_combo()
+        self.saved_profile_combo.setCurrentIndex(self.saved_profile_combo.findData(name))
+
+    def _delete_profile(self):
+        name = self.saved_profile_combo.currentData()
+        if not name:
+            return
+        answer = QMessageBox.question(
+            self,
+            self._tr("profile_delete_title"),
+            self._tr("profile_delete_prompt").format(name=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._profiles.pop(name, None)
+        self._save_profiles()
+        self._refresh_profile_combo()
+        if self.interface_combo.currentData():
+            self._show_selected_interface()
+        else:
+            self._clear_view_fields()
 
     def _lang(self) -> str:
         if self.main_window and getattr(self.main_window, "current_lang", None):
@@ -188,41 +360,17 @@ class NetworkIpSetupPage(QWidget):
         self.interface_label = QLabel()
         form.addRow(self.interface_label, self.interface_combo)
 
-        self.ip_mode_edit = self._make_readonly_edit()
-        self.ip_edit = self._make_readonly_edit()
-        self.mask_edit = self._make_readonly_edit()
-        self.gateway_edit = self._make_readonly_edit()
-        self.dns_mode_edit = self._make_readonly_edit()
-        self.dns_edit = self._make_readonly_edit()
-        self.ip_mode_label = QLabel()
-        self.ip_label = QLabel()
-        self.mask_label = QLabel()
-        self.gateway_label = QLabel()
-        self.dns_mode_label = QLabel()
-        self.dns_label = QLabel()
-        form.addRow(self.ip_mode_label, self.ip_mode_edit)
-        form.addRow(self.ip_label, self.ip_edit)
-        form.addRow(self.mask_label, self.mask_edit)
-        form.addRow(self.gateway_label, self.gateway_edit)
-        form.addRow(self.dns_mode_label, self.dns_mode_edit)
-        form.addRow(self.dns_label, self.dns_edit)
-        layout.addLayout(form)
+        self.saved_profile_label = QLabel()
+        self.saved_profile_combo = QComboBox()
+        self.saved_profile_combo.currentIndexChanged.connect(self._on_profile_selected)
+        form.addRow(self.saved_profile_label, self.saved_profile_combo)
 
-        actions = QHBoxLayout()
-        self.refresh_btn = QPushButton()
-        self.refresh_btn.clicked.connect(lambda: self._load_interfaces())
-        actions.addWidget(self.refresh_btn)
-        actions.addStretch()
-        layout.addLayout(actions)
-
-        self.config_group = QGroupBox()
-        config_form = QFormLayout(self.config_group)
         self.config_ip_mode_label = QLabel()
         self.config_ip_mode_combo = QComboBox()
         self.config_ip_mode_combo.addItem("", "dhcp")
         self.config_ip_mode_combo.addItem("", "static")
         self.config_ip_mode_combo.currentIndexChanged.connect(self._update_config_state)
-        config_form.addRow(self.config_ip_mode_label, self.config_ip_mode_combo)
+        form.addRow(self.config_ip_mode_label, self.config_ip_mode_combo)
 
         self.cfg_ip_edit = QLineEdit()
         self.cfg_mask_edit = QLineEdit()
@@ -230,28 +378,39 @@ class NetworkIpSetupPage(QWidget):
         self.config_ip_label = QLabel()
         self.config_mask_label = QLabel()
         self.config_gateway_label = QLabel()
-        config_form.addRow(self.config_ip_label, self.cfg_ip_edit)
-        config_form.addRow(self.config_mask_label, self.cfg_mask_edit)
-        config_form.addRow(self.config_gateway_label, self.cfg_gateway_edit)
+        form.addRow(self.config_ip_label, self.cfg_ip_edit)
+        form.addRow(self.config_mask_label, self.cfg_mask_edit)
+        form.addRow(self.config_gateway_label, self.cfg_gateway_edit)
 
         self.config_dns_mode_label = QLabel()
         self.config_dns_mode_combo = QComboBox()
         self.config_dns_mode_combo.addItem("", "dhcp")
         self.config_dns_mode_combo.addItem("", "static")
         self.config_dns_mode_combo.currentIndexChanged.connect(self._update_config_state)
-        config_form.addRow(self.config_dns_mode_label, self.config_dns_mode_combo)
+        form.addRow(self.config_dns_mode_label, self.config_dns_mode_combo)
 
         self.cfg_dns_edit = QLineEdit()
         self.config_dns_label = QLabel()
-        config_form.addRow(self.config_dns_label, self.cfg_dns_edit)
+        form.addRow(self.config_dns_label, self.cfg_dns_edit)
+        layout.addLayout(form)
 
+        actions = QHBoxLayout()
+        self.delete_profile_btn = QPushButton()
+        self.delete_profile_btn.clicked.connect(self._delete_profile)
+        actions.addWidget(self.delete_profile_btn)
+        self.save_profile_btn = QPushButton()
+        self.save_profile_btn.clicked.connect(self._save_profile)
+        actions.addWidget(self.save_profile_btn)
+        actions.addStretch()
+        self.refresh_btn = QPushButton()
+        self.refresh_btn.clicked.connect(lambda: self._load_interfaces())
+        actions.addWidget(self.refresh_btn)
         self.apply_btn = QPushButton()
         self.apply_btn.clicked.connect(self._apply_config)
-        apply_row = QHBoxLayout()
-        apply_row.addWidget(self.apply_btn)
-        apply_row.addStretch()
-        config_form.addRow(apply_row)
-        layout.addWidget(self.config_group)
+        actions.addWidget(self.apply_btn)
+        layout.addLayout(actions)
+
+        self._load_profiles()
 
         self.hint_label = QLabel()
         self.hint_label.setWordWrap(True)
@@ -259,24 +418,14 @@ class NetworkIpSetupPage(QWidget):
         layout.addWidget(self.hint_label)
         layout.addStretch()
 
-    @staticmethod
-    def _make_readonly_edit() -> QLineEdit:
-        edit = QLineEdit()
-        edit.setReadOnly(True)
-        return edit
-
     def retranslate_ui(self) -> None:
         tr = self._tr
         self.interface_label.setText(tr("label_interface"))
-        self.ip_mode_label.setText(tr("label_ip_mode"))
-        self.ip_label.setText(tr("label_ip"))
-        self.mask_label.setText(tr("label_mask"))
-        self.gateway_label.setText(tr("label_gateway"))
-        self.dns_mode_label.setText(tr("label_dns_mode"))
-        self.dns_label.setText(tr("label_dns"))
-        self.refresh_btn.setText(tr("btn_refresh"))
-
-        self.config_group.setTitle(tr("group_config"))
+        self.saved_profile_label.setText(tr("label_saved_profile"))
+        if self.saved_profile_combo.count():
+            self.saved_profile_combo.setItemText(0, tr("profile_none"))
+        self.delete_profile_btn.setText(tr("btn_delete_profile"))
+        self.save_profile_btn.setText(tr("btn_save_profile"))
         self.config_ip_mode_label.setText(tr("label_ip_mode"))
         self.config_ip_label.setText(tr("label_ip"))
         self.config_mask_label.setText(tr("label_mask"))
@@ -284,6 +433,7 @@ class NetworkIpSetupPage(QWidget):
         self.config_dns_mode_label.setText(tr("label_dns_mode"))
         self.config_dns_label.setText(tr("label_dns"))
         self.cfg_dns_edit.setPlaceholderText(tr("dns_placeholder"))
+        self.refresh_btn.setText(tr("btn_refresh"))
         self.apply_btn.setText(tr("btn_apply"))
         self.config_ip_mode_combo.setItemText(0, tr("mode_dhcp"))
         self.config_ip_mode_combo.setItemText(1, tr("mode_static"))
@@ -653,28 +803,52 @@ class NetworkIpSetupPage(QWidget):
 
     # ----- 界面更新 -----
 
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        controls = (
+            self.interface_combo,
+            self.saved_profile_combo,
+            self.config_ip_mode_combo,
+            self.cfg_ip_edit,
+            self.cfg_mask_edit,
+            self.cfg_gateway_edit,
+            self.config_dns_mode_combo,
+            self.cfg_dns_edit,
+            self.delete_profile_btn,
+            self.save_profile_btn,
+            self.refresh_btn,
+            self.apply_btn,
+        )
+        for control in controls:
+            control.setEnabled(enabled)
+        if enabled:
+            self._update_config_state()
+
     def _load_interfaces(self, select_name=None):
+        if self._load_thread is not None and self._load_thread.isRunning():
+            return
         if select_name is None and self.interface_combo.currentData():
             select_name = self.interface_combo.currentData()["name"]
 
+        self._pending_select_name = select_name
         self._state = "loading"
-        self.refresh_btn.setEnabled(False)
-        QApplication.processEvents()
-        try:
-            if platform.system() == "Windows":
-                interfaces = self._windows_interfaces()
-            else:
-                interfaces = self._unix_interfaces()
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            self._interfaces = []
-            self.interface_combo.clear()
-            self._clear_view_fields()
-            self._state = "error"
-            self._last_error = str(exc)
-            self.hint_label.setText(self._tr("hint_error").format(err=exc))
-            self.refresh_btn.setEnabled(True)
-            return
+        self._set_controls_enabled(False)
+        self.hint_label.setText(self._tr("hint_loading"))
 
+        self._load_thread = QThread(self)
+        self._load_worker = _InterfaceLoadWorker(self)
+        self._load_worker.moveToThread(self._load_thread)
+        self._load_thread.started.connect(self._load_worker.run)
+        self._load_worker.loaded.connect(self._on_interfaces_loaded)
+        self._load_worker.failed.connect(self._on_interfaces_load_failed)
+        self._load_worker.finished.connect(self._load_thread.quit)
+        self._load_worker.finished.connect(self._load_worker.deleteLater)
+        self._load_thread.finished.connect(self._on_load_thread_finished)
+        self._load_thread.finished.connect(self._load_thread.deleteLater)
+        self._load_thread.start()
+
+    @Slot(object)
+    def _on_interfaces_loaded(self, interfaces):
+        select_name = getattr(self, "_pending_select_name", None)
         self._interfaces = interfaces
         self.interface_combo.blockSignals(True)
         self.interface_combo.clear()
@@ -694,21 +868,37 @@ class NetworkIpSetupPage(QWidget):
             self._clear_view_fields()
             self._state = "empty"
             self.hint_label.setText(self._tr("hint_empty"))
-        self.refresh_btn.setEnabled(True)
         self._maybe_apply_pending()
 
+    @Slot(str)
+    def _on_interfaces_load_failed(self, error):
+        self._interfaces = []
+        self.interface_combo.clear()
+        self._clear_view_fields()
+        self._state = "error"
+        self._last_error = error
+        self.hint_label.setText(self._tr("hint_error").format(err=error))
+
+    @Slot()
+    def _on_load_thread_finished(self):
+        self._set_controls_enabled(True)
+        self._load_worker = None
+        self._load_thread = None
+
     def _clear_view_fields(self):
-        for edit in (
-            self.ip_mode_edit, self.ip_edit, self.mask_edit,
-            self.gateway_edit, self.dns_mode_edit, self.dns_edit,
-        ):
-            edit.clear()
         self.cfg_ip_edit.clear()
         self.cfg_mask_edit.clear()
         self.cfg_gateway_edit.clear()
         self.cfg_dns_edit.clear()
+        self.config_ip_mode_combo.setCurrentIndex(0)
+        self.config_dns_mode_combo.setCurrentIndex(0)
+        self._update_config_state()
 
     def _on_interface_changed(self, _index=None):
+        self.saved_profile_combo.blockSignals(True)
+        self.saved_profile_combo.setCurrentIndex(0)
+        self.saved_profile_combo.blockSignals(False)
+        self.delete_profile_btn.setEnabled(False)
         self._show_selected_interface()
 
     def _show_selected_interface(self, _index=None):
@@ -716,13 +906,6 @@ class NetworkIpSetupPage(QWidget):
         if not item:
             return
         self._state = "loaded"
-        not_set = self._tr("not_configured")
-        self.ip_mode_edit.setText(self._mode_text(item["ip_mode"]))
-        self.ip_edit.setText(item["ip"] or not_set)
-        self.mask_edit.setText(item["mask"] or not_set)
-        self.gateway_edit.setText(item["gateway"] or not_set)
-        self.dns_mode_edit.setText(self._mode_text(item["dns_mode"]))
-        self.dns_edit.setText(item["dns"] or not_set)
         self._fill_config_from(item)
         self.hint_label.setText(self._tr("hint_loaded"))
 
