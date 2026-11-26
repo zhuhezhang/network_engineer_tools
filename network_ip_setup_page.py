@@ -401,13 +401,13 @@ class NetworkIpSetupPage(QWidget):
         self.save_profile_btn = QPushButton()
         self.save_profile_btn.clicked.connect(self._save_profile)
         actions.addWidget(self.save_profile_btn)
-        actions.addStretch()
         self.refresh_btn = QPushButton()
         self.refresh_btn.clicked.connect(lambda: self._load_interfaces())
         actions.addWidget(self.refresh_btn)
         self.apply_btn = QPushButton()
         self.apply_btn.clicked.connect(self._apply_config)
         actions.addWidget(self.apply_btn)
+        actions.addStretch()
         layout.addLayout(actions)
 
         self._load_profiles()
@@ -686,6 +686,27 @@ class NetworkIpSetupPage(QWidget):
             parts.append("")
         return parts[0].strip(), parts[1].strip(), parts[2].strip()
 
+    @staticmethod
+    def _macos_address(name: str):
+        try:
+            result = subprocess.run(
+                ["/sbin/ifconfig", name], capture_output=True, text=True, timeout=10
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            match = re.search(r"\binet\s+(\d+(?:\.\d+){3})\s+netmask\s+(0x[0-9a-fA-F]+)", line)
+            if not match:
+                continue
+            ip = match.group(1)
+            if ip.startswith(("127.", "169.254.")):
+                continue
+            mask = str(IPv4Address(int(match.group(2), 16)))
+            return ip, mask
+        return None
+
     @classmethod
     def _macos_interfaces(cls):
         resolv_dns = cls._resolv_dns()
@@ -725,7 +746,7 @@ class NetworkIpSetupPage(QWidget):
 
         interfaces = []
         for _, name in socket.if_nameindex():
-            address = cls._ioctl_address(name)
+            address = cls._macos_address(name)
             if not address:
                 continue
             ip, mask = address
@@ -767,6 +788,9 @@ class NetworkIpSetupPage(QWidget):
                     ip_mode = "static"
                 elif low.startswith("dhcp configuration"):
                     ip_mode = "dhcp"
+                elif low.startswith("manually using dhcp"):
+                    # macOS 表示 IP 地址是手动指定的，仅其余网络参数使用 DHCP。
+                    ip_mode = "static"
                 elif low.startswith("router:"):
                     gateway = text.split(":", 1)[1].strip()
         except (OSError, subprocess.SubprocessError):
@@ -1008,6 +1032,11 @@ class NetworkIpSetupPage(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+
+        self.saved_profile_combo.blockSignals(True)
+        self.saved_profile_combo.setCurrentIndex(0)
+        self.saved_profile_combo.blockSignals(False)
+        self.delete_profile_btn.setEnabled(False)
 
         config = {
             "name": item["name"],
