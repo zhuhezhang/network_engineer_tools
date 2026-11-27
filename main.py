@@ -41,6 +41,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QAbstractButton,
     QDialog,
+    QLabel,
+    QDialogButtonBox,
 )
 from text_compare_page import TextComparePage
 from ip_calculator_page import IpCalculatorPage
@@ -71,6 +73,9 @@ TRANSLATIONS = {
         "menu_lang": "语言/Language",
         "menu_help": "帮助",
         "action_about": "关于",
+        "about_title": "关于网络工程师工具",
+        "about_description": "包含文本对比、IP地址计算、批量ping、网卡IP地址设置功能的网络工程师运维工具集",
+        "about_project": "项目地址",
         "nav_text_compare": "文本对比",
         "nav_ip_calculator": "IP地址计算",
         "nav_batch_ping": "批量ping",
@@ -98,6 +103,9 @@ TRANSLATIONS = {
         "menu_lang": "Language/语言",
         "menu_help": "Help",
         "action_about": "About",
+        "about_title": "About Network Engineer Tools",
+        "about_description": "A network engineering operations toolkit featuring text comparison, IP address calculation, batch ping, and network adapter IP configuration.",
+        "about_project": "Project",
         "nav_text_compare": "Text Compare",
         "nav_ip_calculator": "IP Calculator",
         "nav_batch_ping": "Batch Ping",
@@ -542,7 +550,34 @@ class NetworkEngineerTools(QMainWindow):
         self.move(int((screen.width() - size.width()) / 2), int((screen.height() - size.height()) / 2))
 
     def _show_about(self):
-        self.status_bar.showMessage("Network Engineer Tools")
+        tr = TRANSLATIONS[self.current_lang]
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr["about_title"])
+        dialog.setModal(True)
+
+        dialog.setMinimumSize(500, 100)
+        dialog.resize(550, 110)
+
+        layout = QVBoxLayout(dialog)
+        description = QLabel(tr["about_description"])
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        project_label = QLabel(
+            f'{tr["about_project"]}:\n'
+            "https://github.com/zhuhezhang/network_engineer_tools\n"
+            "https://gitee.com/zhuhezhang/network_engineer_tools"
+        )
+        project_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        project_label.setWordWrap(True)
+        layout.addWidget(project_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.adjustSize()
+        dialog.exec()
 
     def zoom_in(self):
         self._apply_global_zoom(self.global_zoom * GLOBAL_ZOOM_STEP)
