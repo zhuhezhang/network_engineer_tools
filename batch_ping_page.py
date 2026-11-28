@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import itertools
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -156,10 +156,13 @@ class HostStats:
     sent: int = 0
     ok: int = 0
     fail: int = 0
-    rtts: List[float] = field(default_factory=list)
     last_rtt: Optional[float] = None
     status: str = "idle"  # idle | ok | fail | resolve_fail | error
     last_error: str = ""
+    _rtt_min: Optional[float] = None
+    _rtt_max: Optional[float] = None
+    _rtt_sum: float = 0.0
+    _rtt_count: int = 0
 
     @property
     def loss_percent(self) -> float:
@@ -169,24 +172,36 @@ class HostStats:
 
     @property
     def min_rtt(self) -> Optional[float]:
-        return min(self.rtts) if self.rtts else None
+        return self._rtt_min
 
     @property
     def avg_rtt(self) -> Optional[float]:
-        return sum(self.rtts) / len(self.rtts) if self.rtts else None
+        if self._rtt_count == 0:
+            return None
+        return self._rtt_sum / self._rtt_count
 
     @property
     def max_rtt(self) -> Optional[float]:
-        return max(self.rtts) if self.rtts else None
+        return self._rtt_max
+
+    def add_rtt(self, rtt: float) -> None:
+        self.last_rtt = rtt
+        self._rtt_sum += rtt
+        self._rtt_count += 1
+        self._rtt_min = rtt if self._rtt_min is None else min(self._rtt_min, rtt)
+        self._rtt_max = rtt if self._rtt_max is None else max(self._rtt_max, rtt)
 
     def reset_counters(self) -> None:
         self.sent = 0
         self.ok = 0
         self.fail = 0
-        self.rtts.clear()
         self.last_rtt = None
         self.status = "idle"
         self.last_error = ""
+        self._rtt_min = None
+        self._rtt_max = None
+        self._rtt_sum = 0.0
+        self._rtt_count = 0
 
 
 @dataclass
@@ -243,9 +258,10 @@ def expand_host_token(token: str) -> List[str]:
 
 
 class PingWorker(QThread):
-    """在后台线程并发执行一轮 ICMP 探测（逐主机捕获解析失败）。"""
+    """在后台线程并发执行一轮 ICMP 探测；每台主机完成后立即上报结果。"""
 
-    roundFinished = Signal(list)  # List[HostRoundResult]
+    hostResult = Signal(object)  # HostRoundResult
+    roundFinished = Signal()
     roundFailed = Signal(str)
 
     def __init__(
@@ -265,21 +281,32 @@ class PingWorker(QThread):
             self.roundFailed.emit("missing_icmplib")
             return
         try:
-            results = asyncio.run(self._async_round())
-            self.roundFinished.emit(results)
+            asyncio.run(self._async_round())
+            if self.isInterruptionRequested():
+                return
+            self.roundFinished.emit()
+        except asyncio.CancelledError:
+            return
         except SocketPermissionError:
-            self.roundFailed.emit("permission_error")
+            if not self.isInterruptionRequested():
+                self.roundFailed.emit("permission_error")
         except ICMPLibError as exc:
-            self.roundFailed.emit(str(exc))
+            if not self.isInterruptionRequested():
+                self.roundFailed.emit(str(exc))
         except Exception as exc:  # pragma: no cover
-            self.roundFailed.emit(str(exc))
+            if not self.isInterruptionRequested():
+                self.roundFailed.emit(str(exc))
 
-    async def _async_round(self) -> List[HostRoundResult]:
+    async def _async_round(self) -> None:
         concurrent = min(self.concurrent, max(1, len(self.hosts)))
         semaphore = asyncio.Semaphore(concurrent)
 
         async def ping_one(host: str) -> HostRoundResult:
+            if self.isInterruptionRequested():
+                raise asyncio.CancelledError()
             async with semaphore:
+                if self.isInterruptionRequested():
+                    raise asyncio.CancelledError()
                 try:
                     host_obj = await async_ping(
                         host,
@@ -305,10 +332,35 @@ class PingWorker(QThread):
                     )
                 except SocketPermissionError:
                     raise
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:  # pragma: no cover
                     return HostRoundResult(host=host, error=str(exc))
 
-        return list(await asyncio.gather(*[ping_one(h) for h in self.hosts]))
+        tasks = [asyncio.create_task(ping_one(h)) for h in self.hosts]
+        pending = set(tasks)
+        while pending:
+            if self.isInterruptionRequested():
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                raise asyncio.CancelledError()
+            done, pending = await asyncio.wait(
+                pending, timeout=0.2, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    result = task.result()
+                except asyncio.CancelledError:
+                    continue
+                except SocketPermissionError:
+                    for leftover in pending:
+                        leftover.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    raise
+                else:
+                    if not self.isInterruptionRequested():
+                        self.hostResult.emit(result)
 
 
 class BatchPingPage(QWidget):
@@ -319,6 +371,7 @@ class BatchPingPage(QWidget):
         self.main_window = main_window
         self._stats: Dict[str, HostStats] = {}
         self._host_order: List[str] = []
+        self._host_row: Dict[str, int] = {}
         self._running = False
         self._stopping = False
         self._worker: Optional[PingWorker] = None
@@ -482,6 +535,21 @@ class BatchPingPage(QWidget):
         self._stopping = True
         self._running = False
         self._schedule_timer.stop()
+        worker = self._worker
+        if worker is not None:
+            try:
+                worker.hostResult.disconnect(self._on_host_result)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                worker.roundFinished.disconnect(self._on_round_finished)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                worker.roundFailed.disconnect(self._on_round_failed)
+            except (TypeError, RuntimeError):
+                pass
+            worker.requestInterruption()
         self._set_running_ui(False)
 
     def _on_reset(self) -> None:
@@ -501,6 +569,7 @@ class BatchPingPage(QWidget):
             concurrent=int(self.concurrent_spin.value()),
             parent=self,
         )
+        self._worker.hostResult.connect(self._on_host_result)
         self._worker.roundFinished.connect(self._on_round_finished)
         self._worker.roundFailed.connect(self._on_round_failed)
         self._worker.finished.connect(self._on_worker_finished)
@@ -519,50 +588,51 @@ class BatchPingPage(QWidget):
         QMessageBox.warning(self, "", msg)
         self._on_stop()
 
-    def _on_round_finished(self, results: list) -> None:
-        if self._stopping:
+    def _on_host_result(self, item) -> None:
+        if self._stopping or not isinstance(item, HostRoundResult):
             return
 
-        for item in results:
-            if not isinstance(item, HostRoundResult):
-                continue
-            stats = self._stats.get(item.host)
-            if stats is None:
-                stats = HostStats(host=item.host)
-                self._stats[item.host] = stats
+        stats = self._stats.get(item.host)
+        if stats is None:
+            stats = HostStats(host=item.host)
+            self._stats[item.host] = stats
 
-            stats.sent += 1
-            if item.ip:
-                stats.ip = item.ip
+        stats.sent += 1
+        if item.ip:
+            stats.ip = item.ip
 
-            if item.resolve_failed:
-                stats.fail += 1
-                stats.status = "resolve_fail"
-                stats.last_rtt = None
-            elif item.error:
-                stats.fail += 1
-                stats.status = "error"
-                stats.last_error = item.error
-                stats.last_rtt = None
-            elif item.alive:
-                stats.ok += 1
-                stats.status = "ok"
-                if item.rtt is not None:
-                    stats.last_rtt = item.rtt
-                    stats.rtts.append(item.rtt)
-                else:
-                    stats.last_rtt = None
+        if item.resolve_failed:
+            stats.fail += 1
+            stats.status = "resolve_fail"
+            stats.last_rtt = None
+        elif item.error:
+            stats.fail += 1
+            stats.status = "error"
+            stats.last_error = item.error
+            stats.last_rtt = None
+        elif item.alive:
+            stats.ok += 1
+            stats.status = "ok"
+            if item.rtt is not None:
+                stats.add_rtt(item.rtt)
             else:
-                stats.fail += 1
-                stats.status = "fail"
                 stats.last_rtt = None
+        else:
+            stats.fail += 1
+            stats.status = "fail"
+            stats.last_rtt = None
 
-        self._refresh_table()
+        self._refresh_host_row(item.host)
+
+    def _on_round_finished(self) -> None:
+        if self._stopping:
+            return
         if self._running and not self._stopping:
             interval_ms = int(self.interval_spin.value() * 1000)
             self._schedule_timer.start(interval_ms)
 
     def _rebuild_table_rows(self) -> None:
+        self._host_row = {host: row for row, host in enumerate(self._host_order)}
         self.table.setRowCount(len(self._host_order))
         for row, host in enumerate(self._host_order):
             for col in range(len(COLUMNS)):
@@ -591,36 +661,49 @@ class BatchPingPage(QWidget):
             return f"{text}: {stats.last_error}"
         return text
 
+    def _refresh_host_row(self, host: str) -> None:
+        if self.table.rowCount() != len(self._host_order):
+            self._rebuild_table_rows()
+            return
+        row = self._host_row.get(host)
+        if row is None:
+            return
+        self._paint_row(row, host)
+
     def _refresh_table(self) -> None:
         if self.table.rowCount() != len(self._host_order):
             self._rebuild_table_rows()
             return
-
+        if len(self._host_row) != len(self._host_order):
+            self._host_row = {host: row for row, host in enumerate(self._host_order)}
         for row, host in enumerate(self._host_order):
-            stats = self._stats.get(host) or HostStats(host=host)
-            values = [
-                host,
-                stats.ip or "-",
-                self._status_text(stats),
-                str(stats.ok),
-                str(stats.fail),
-                f"{stats.loss_percent:.1f}%",
-                self._fmt_rtt(stats.last_rtt),
-                self._fmt_rtt(stats.min_rtt),
-                self._fmt_rtt(stats.avg_rtt),
-                self._fmt_rtt(stats.max_rtt),
-            ]
-            failed_now = stats.status in ("fail", "resolve_fail", "error")
-            brush = QBrush(FAIL_BG if failed_now else OK_BG)
-            for col, text in enumerate(values):
-                item = self.table.item(row, col)
-                if item is None:
-                    item = QTableWidgetItem()
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    self.table.setItem(row, col, item)
-                item.setText(text)
-                item.setBackground(brush)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._paint_row(row, host)
+
+    def _paint_row(self, row: int, host: str) -> None:
+        stats = self._stats.get(host) or HostStats(host=host)
+        values = [
+            host,
+            stats.ip or "-",
+            self._status_text(stats),
+            str(stats.ok),
+            str(stats.fail),
+            f"{stats.loss_percent:.1f}%",
+            self._fmt_rtt(stats.last_rtt),
+            self._fmt_rtt(stats.min_rtt),
+            self._fmt_rtt(stats.avg_rtt),
+            self._fmt_rtt(stats.max_rtt),
+        ]
+        failed_now = stats.status in ("fail", "resolve_fail", "error")
+        brush = QBrush(FAIL_BG if failed_now else OK_BG)
+        for col, text in enumerate(values):
+            item = self.table.item(row, col)
+            if item is None:
+                item = QTableWidgetItem()
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, col, item)
+            item.setText(text)
+            item.setBackground(brush)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def _on_section_resized(self, _logical_index: int, _old: int, _new: int) -> None:
         # 程序自动等分 / 尚未完成首次等分时忽略；用户拖动后保留其设置

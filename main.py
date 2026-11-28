@@ -18,24 +18,22 @@ Windows/Linux pyinstaller打包：pyinstaller -F -w main.py
 """
 import json
 import os
-import shlex
 import subprocess
 from pathlib import Path
-from sys import exit, argv, executable, platform
+from sys import exit, argv, platform
 
-import subprocess
-from PySide6.QtCore import Qt, QEvent, QTimer
-from PySide6.QtGui import  QAction, QKeySequence
+from PySide6.QtCore import Qt, QEvent
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, 
-    QMainWindow, 
-    QWidget, 
-    QVBoxLayout, 
-    QSplitter, 
-    QStatusBar, 
-    QPushButton, 
-    QSplitterHandle, 
-    QStackedWidget, 
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QSplitter,
+    QStatusBar,
+    QPushButton,
+    QSplitterHandle,
+    QStackedWidget,
     QSizePolicy,
     QLineEdit,
     QComboBox,
@@ -644,7 +642,6 @@ def _elevated_config_from_args():
         return None
     try:
         import base64
-        import json
 
         return json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
     except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):

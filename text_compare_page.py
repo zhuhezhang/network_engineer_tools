@@ -1,9 +1,9 @@
 from __future__ import annotations
 from difflib import SequenceMatcher
 from sys import platform
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from charset_normalizer import from_bytes
-from PySide6.QtCore import Qt, Signal, QRegularExpression, QTimer, QSize
+from PySide6.QtCore import Qt, Signal, QRegularExpression, QThread, QTimer, QSize
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -56,7 +56,9 @@ TRANSLATIONS = {
         "placeholder_result_of_orig": "原始文本比较结果（对齐后）",
         "placeholder_result_of_mod": "修改后文本的比较结果（对齐后）",
         "status_ready": "就绪",
+        "status_comparing": "正在比较...",
         "status_comp_done": "比较完成",
+        "status_comp_failed": "比较失败: {err}",
         "open_text_file": "打开文本文件",
         "open_text_file_mode": "文本文件 (*.txt *.log);;所有文件 (*.*)",
         "error": "错误",
@@ -108,7 +110,9 @@ TRANSLATIONS = {
         "placeholder_result_of_orig": "Comparison Result Of Original Text (Aligned)",
         "placeholder_result_of_mod": "Comparison Result Of Modified Text (Aligned)",
         "status_ready": "Ready",
+        "status_comparing": "Comparing...",
         "status_comp_done": "Comparison Complete",
+        "status_comp_failed": "Comparison failed: {err}",
         "open_text_file": "Open Text File",
         "open_text_file_mode": "Text Files (*.txt *.log);;All Files (*.*)",
         "error": "Error",
@@ -647,6 +651,92 @@ class FindReplaceDialog(QDialog):
         QTimer.singleShot(3000, self._update_highlights)
 
 
+# DiffSpan: (side, line_idx, col_start, length, kind)
+# side: "left"|"right"; col_start < 0 表示整行高亮; kind: delete|insert|replace
+DiffSpan = Tuple[str, int, int, int, str]
+
+
+class CompareWorker(QThread):
+    """在后台线程计算行对齐与字符级差异，避免大文本卡住 UI。"""
+
+    finished_ok = Signal(str, str, object)  # left_text, right_text, List[DiffSpan]
+    failed = Signal(str)
+
+    def __init__(self, left_text: str, right_text: str, parent=None):
+        super().__init__(parent)
+        self.left_text = left_text
+        self.right_text = right_text
+
+    def run(self) -> None:
+        try:
+            left_lines = self.left_text.splitlines()
+            right_lines = self.right_text.splitlines()
+            matcher = SequenceMatcher(None, left_lines, right_lines)
+            left_aligned: List[str] = []
+            right_aligned: List[str] = []
+
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if self.isInterruptionRequested():
+                    return
+                if tag == "equal":
+                    for k in range(i2 - i1):
+                        left_aligned.append(left_lines[i1 + k])
+                        right_aligned.append(right_lines[j1 + k])
+                elif tag == "replace":
+                    left_block = left_lines[i1:i2]
+                    right_block = right_lines[j1:j2]
+                    max_len = max(len(left_block), len(right_block))
+                    for k in range(max_len):
+                        left_aligned.append(left_block[k] if k < len(left_block) else "")
+                        right_aligned.append(right_block[k] if k < len(right_block) else "")
+                elif tag == "delete":
+                    for k in range(i1, i2):
+                        left_aligned.append(left_lines[k])
+                        right_aligned.append("")
+                elif tag == "insert":
+                    for k in range(j1, j2):
+                        left_aligned.append("")
+                        right_aligned.append(right_lines[k])
+
+            spans: List[DiffSpan] = []
+            for line_idx, (l_line, r_line) in enumerate(zip(left_aligned, right_aligned)):
+                if self.isInterruptionRequested():
+                    return
+                if not l_line and not r_line:
+                    continue
+                if l_line and not r_line:
+                    spans.append(("left", line_idx, -1, len(l_line), "delete"))
+                    continue
+                if not l_line and r_line:
+                    spans.append(("right", line_idx, -1, len(r_line), "insert"))
+                    continue
+
+                line_matcher = SequenceMatcher(None, l_line, r_line)
+                for op, a_start, a_end, b_start, b_end in line_matcher.get_opcodes():
+                    if op == "equal":
+                        continue
+                    if op in ("delete", "replace"):
+                        spans.append(
+                            ("left", line_idx, a_start, a_end - a_start,
+                             "delete" if op == "delete" else "replace")
+                        )
+                    if op in ("insert", "replace"):
+                        spans.append(
+                            ("right", line_idx, b_start, b_end - b_start,
+                             "insert" if op == "insert" else "replace")
+                        )
+
+            if self.isInterruptionRequested():
+                return
+            self.finished_ok.emit(
+                "\n".join(left_aligned),
+                "\n".join(right_aligned),
+                spans,
+            )
+        except Exception as exc:  # pragma: no cover
+            self.failed.emit(str(exc))
+
+
 class TextComparePage(QWidget):
     """文本比较功能页"""
 
@@ -656,6 +746,7 @@ class TextComparePage(QWidget):
         self.current_font_size = DEFAULT_FONT_SIZE
         self.current_editor = None
         self.find_dialog = FindReplaceDialog(self.main_window)
+        self._compare_worker: Optional[CompareWorker] = None
         self._init_ui()
         self._setup_context_menus()
         self._connect_focus_signals()
@@ -851,46 +942,55 @@ class TextComparePage(QWidget):
     def find_prev(self):
         self._find_prev()
 
+    def _set_compare_busy(self, busy: bool) -> None:
+        action = getattr(self.main_window, "action_compare", None)
+        if action is not None:
+            action.setEnabled(not busy)
+
     def _compare_texts(self):
+        if self._compare_worker is not None and self._compare_worker.isRunning():
+            self._compare_worker.requestInterruption()
+            self._compare_worker.wait(100)
+
+        tr = TRANSLATIONS[self.main_window.current_lang]
         left_text = self.text_left_input.toPlainText()
         right_text = self.text_right_input.toPlainText()
-        left_lines = left_text.splitlines()
-        right_lines = right_text.splitlines()
-        matcher = SequenceMatcher(None, left_lines, right_lines)
-        opcodes = matcher.get_opcodes()
-        left_aligned = []
-        right_aligned = []
+        self._set_compare_busy(True)
+        self.main_window.status_bar.showMessage(tr["status_comparing"])
 
-        for tag, i1, i2, j1, j2 in opcodes:
-            if tag == 'equal':
-                for k in range(i2 - i1):
-                    left_aligned.append(left_lines[i1 + k])
-                    right_aligned.append(right_lines[j1 + k])
-            elif tag == 'replace':
-                left_block = left_lines[i1:i2]
-                right_block = right_lines[j1:j2]
-                max_len = max(len(left_block), len(right_block))
-                for k in range(max_len):
-                    left_aligned.append(left_block[k] if k < len(left_block) else "")
-                    right_aligned.append(right_block[k] if k < len(right_block) else "")
-            elif tag == 'delete':
-                for k in range(i1, i2):
-                    left_aligned.append(left_lines[k])
-                    right_aligned.append("")
-            elif tag == 'insert':
-                for k in range(j1, j2):
-                    left_aligned.append("")
-                    right_aligned.append(right_lines[k])
+        worker = CompareWorker(left_text, right_text, self)
+        self._compare_worker = worker
+        worker.finished_ok.connect(self._on_compare_finished)
+        worker.failed.connect(self._on_compare_failed)
+        worker.finished.connect(self._on_compare_worker_finished)
+        worker.start()
 
-        left_result_text = "\n".join(left_aligned)
-        right_result_text = "\n".join(right_aligned)
+    def _on_compare_worker_finished(self) -> None:
+        worker = self.sender()
+        if worker is self._compare_worker:
+            self._compare_worker = None
+            self._set_compare_busy(False)
+        elif self._compare_worker is None:
+            self._set_compare_busy(False)
+
+    def _on_compare_failed(self, err: str) -> None:
+        if self.sender() is not None and self.sender() is not self._compare_worker:
+            return
+        tr = TRANSLATIONS[self.main_window.current_lang]
+        self.main_window.status_bar.showMessage(
+            tr["status_comp_failed"].format(err=err), 5000
+        )
+
+    def _on_compare_finished(self, left_result_text: str, right_result_text: str, spans) -> None:
+        if self.sender() is not None and self.sender() is not self._compare_worker:
+            return
         self.text_left_result.setPlainText(left_result_text)
         self.text_right_result.setPlainText(right_result_text)
-
         self.text_left_result.set_diff_selections([])
         self.text_right_result.set_diff_selections([])
-        left_selections = []
-        right_selections = []
+
+        left_selections: List[QTextEdit.ExtraSelection] = []
+        right_selections: List[QTextEdit.ExtraSelection] = []
         delete_format = QTextCharFormat()
         delete_format.setBackground(QColor(220, 50, 50))
         delete_format.setForeground(Qt.white)
@@ -900,31 +1000,32 @@ class TextComparePage(QWidget):
         replace_format = QTextCharFormat()
         replace_format.setBackground(QColor(250, 200, 50))
         replace_format.setForeground(Qt.black)
+        formats = {
+            "delete": delete_format,
+            "insert": insert_format,
+            "replace": replace_format,
+        }
 
-        for line_idx, (l_line, r_line) in enumerate(zip(left_aligned, right_aligned)):
-            if not l_line and not r_line:
+        left_lines = left_result_text.splitlines()
+        right_lines = right_result_text.splitlines()
+        for side, line_idx, col_start, length, kind in spans or []:
+            fmt = formats.get(kind)
+            if fmt is None:
                 continue
-            if l_line and not r_line:
-                self._add_line_selection(True, line_idx, l_line, delete_format, left_selections)
-                continue
-            if not l_line and r_line:
-                self._add_line_selection(False, line_idx, r_line, insert_format, right_selections)
-                continue
-
-            line_matcher = SequenceMatcher(None, l_line, r_line)
-            for op, a_start, a_end, b_start, b_end in line_matcher.get_opcodes():
-                if op == 'equal':
-                    continue
-                if op in ('delete', 'replace'):
-                    self._add_char_selection(True, line_idx, a_start, a_end - a_start,
-                                             delete_format if op == 'delete' else replace_format, left_selections)
-                if op in ('insert', 'replace'):
-                    self._add_char_selection(False, line_idx, b_start, b_end - b_start,
-                                             insert_format if op == 'insert' else replace_format, right_selections)
+            is_left = side == "left"
+            selections = left_selections if is_left else right_selections
+            if col_start < 0:
+                lines = left_lines if is_left else right_lines
+                line_text = lines[line_idx] if 0 <= line_idx < len(lines) else ""
+                self._add_line_selection(is_left, line_idx, line_text, fmt, selections)
+            else:
+                self._add_char_selection(is_left, line_idx, col_start, length, fmt, selections)
 
         self.text_left_result.set_diff_selections(left_selections)
         self.text_right_result.set_diff_selections(right_selections)
-        self.main_window.status_bar.showMessage(TRANSLATIONS[self.main_window.current_lang]["status_comp_done"], 3000)
+        self.main_window.status_bar.showMessage(
+            TRANSLATIONS[self.main_window.current_lang]["status_comp_done"], 3000
+        )
 
     def _add_line_selection(self, flag: bool, line_idx: int, line_text: str, format1: QTextCharFormat,
                             selections_list: List[QTextEdit.ExtraSelection]):

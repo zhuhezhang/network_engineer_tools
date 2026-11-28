@@ -76,6 +76,9 @@ PAGE_TRANSLATIONS = {
         "err_no_connection": "未找到网卡「{name}」对应的 NetworkManager 连接，无法写入配置",
         "err_no_service": "未找到网卡「{name}」对应的 macOS 网络服务，无法写入配置",
         "err_write": "写入配置失败（退出码 {code}）\n\n{output}",
+        "err_elevated_invalid": "提权后配置校验失败，已取消写入：{detail}",
+        "err_elevated_iface": "提权后未找到目标网卡「{name}」，已取消写入",
+        "err_elevated_mode": "提权后配置模式无效，已取消写入",
         "elevate_title": "需要管理员权限",
         "elevate_text": "修改网络配置需要管理员权限。是否以管理员身份重新启动程序（将弹出 UAC 提示）？",
         "elevate_failed": "未能启动管理员进程，可能已取消 UAC 授权",
@@ -130,6 +133,9 @@ PAGE_TRANSLATIONS = {
         "err_no_connection": "No NetworkManager connection found for \"{name}\"; cannot apply settings",
         "err_no_service": "No macOS network service found for \"{name}\"; cannot apply settings",
         "err_write": "Failed to write configuration (exit code {code})\n\n{output}",
+        "err_elevated_invalid": "Elevated config validation failed; write aborted: {detail}",
+        "err_elevated_iface": "Target interface \"{name}\" was not found after elevation; write aborted",
+        "err_elevated_mode": "Invalid configuration mode after elevation; write aborted",
         "elevate_title": "Administrator Required",
         "elevate_text": "Changing network settings requires administrator privileges. Restart the program as administrator (a UAC prompt will appear)?",
         "elevate_failed": "Failed to start the elevated process. The UAC authorization may have been cancelled",
@@ -966,10 +972,11 @@ class NetworkIpSetupPage(QWidget):
     def _show_error(self, key: str, **params) -> None:
         QMessageBox.warning(self, "", self._tr(key).format(**params))
 
-    def _validate_ip_config(self):
-        ip = self.cfg_ip_edit.text().strip()
-        mask = self.cfg_mask_edit.text().strip()
-        gateway = self.cfg_gateway_edit.text().strip()
+    @staticmethod
+    def _normalize_static_ip(ip: str, mask: str, gateway: str):
+        ip = (ip or "").strip()
+        mask = (mask or "").strip()
+        gateway = (gateway or "").strip()
         try:
             IPv4Address(ip)
         except ValueError as exc:
@@ -985,14 +992,17 @@ class NetworkIpSetupPage(QWidget):
                 raise ConfigError("err_invalid_gateway", value=gateway) from exc
         return ip, mask, gateway
 
-    def _validate_dns_config(self) -> list:
-        raw = (
-            self.cfg_dns_edit.text()
-            .replace("，", ",")
-            .replace("；", ",")
-            .replace(";", ",")
-        )
-        servers = [part.strip() for chunk in raw.split(",") for part in chunk.split()]
+    @staticmethod
+    def _normalize_static_dns(dns_servers) -> list:
+        if isinstance(dns_servers, str):
+            raw = (
+                dns_servers.replace("，", ",")
+                .replace("；", ",")
+                .replace(";", ",")
+            )
+            servers = [part.strip() for chunk in raw.split(",") for part in chunk.split()]
+        else:
+            servers = [str(server).strip() for server in (dns_servers or [])]
         servers = [server for server in servers if server]
         if not servers:
             raise ConfigError("err_dns_required")
@@ -1002,6 +1012,51 @@ class NetworkIpSetupPage(QWidget):
             except ValueError as exc:
                 raise ConfigError("err_invalid_dns", value=server) from exc
         return servers
+
+    def _validate_ip_config(self):
+        return self._normalize_static_ip(
+            self.cfg_ip_edit.text(),
+            self.cfg_mask_edit.text(),
+            self.cfg_gateway_edit.text(),
+        )
+
+    def _validate_dns_config(self) -> list:
+        return self._normalize_static_dns(self.cfg_dns_edit.text())
+
+    def _validate_elevated_config(self, config: dict) -> dict:
+        """提权重启后再次校验待写入配置，失败则中止。"""
+        if not isinstance(config, dict):
+            raise ConfigError("err_elevated_mode")
+        name = str(config.get("name") or "").strip()
+        if not name:
+            raise ConfigError("err_no_interface")
+        ip_mode = config.get("ip_mode")
+        dns_mode = config.get("dns_mode")
+        if ip_mode not in ("dhcp", "static") or dns_mode not in ("dhcp", "static"):
+            raise ConfigError("err_elevated_mode")
+        if ip_mode == "static":
+            ip, mask, gateway = self._normalize_static_ip(
+                config.get("ip", ""),
+                config.get("mask", ""),
+                config.get("gateway", ""),
+            )
+        else:
+            ip, mask, gateway = "", "", ""
+        if dns_mode == "static":
+            dns_servers = self._normalize_static_dns(config.get("dns_servers", []))
+        else:
+            dns_servers = []
+        return {
+            "name": name,
+            "connection": str(config.get("connection") or ""),
+            "service": str(config.get("service") or ""),
+            "ip_mode": ip_mode,
+            "ip": ip,
+            "mask": mask,
+            "gateway": gateway,
+            "dns_mode": dns_mode,
+            "dns_servers": dns_servers,
+        }
 
     def _apply_config(self):
         item = self.interface_combo.currentData()
@@ -1160,19 +1215,34 @@ class NetworkIpSetupPage(QWidget):
     def _maybe_apply_pending(self):
         if not self._elevated_pending:
             return
-        config = self._elevated_pending
+        raw_config = self._elevated_pending
         self._elevated_pending = None
 
-        # 选中目标网卡
-        iface = config.get("name")
-        index = self.interface_combo.findText(iface) if iface else -1
-        if index >= 0:
-            self.interface_combo.setCurrentIndex(index)
-            item = self.interface_combo.currentData()
-            if item:
-                self._show_selected_interface()
+        try:
+            config = self._validate_elevated_config(raw_config)
+        except ConfigError as exc:
+            detail = self._tr(exc.key).format(**exc.params)
+            self._show_error("err_elevated_invalid", detail=detail)
+            self.apply_btn.setEnabled(True)
+            self._state = "loaded"
+            return
 
-        # 用待写入的值回填配置区，再直接执行（用户在提权前已确认）
+        iface = config["name"]
+        index = self.interface_combo.findText(iface)
+        if index < 0:
+            self._show_error("err_elevated_iface", name=iface)
+            self.apply_btn.setEnabled(True)
+            self._state = "loaded"
+            return
+
+        self.interface_combo.setCurrentIndex(index)
+        item = self.interface_combo.currentData()
+        if item:
+            self._show_selected_interface()
+            # 用当前枚举到的连接/服务名覆盖，避免提权前后名称漂移
+            config["connection"] = item.get("connection") or config["connection"]
+            config["service"] = item.get("service") or config["service"]
+
         self.config_ip_mode_combo.setCurrentIndex(0 if config["ip_mode"] != "static" else 1)
         self.config_dns_mode_combo.setCurrentIndex(0 if config["dns_mode"] != "static" else 1)
         self.cfg_ip_edit.setText(config["ip"])
@@ -1180,9 +1250,8 @@ class NetworkIpSetupPage(QWidget):
         self.cfg_gateway_edit.setText(config["gateway"])
         self.cfg_dns_edit.setText(", ".join(config["dns_servers"]))
         self._update_config_state()
-        self._elevated_iface = iface or ""
+        self._elevated_iface = iface
 
-        # 写入脚本
         system = platform.system()
         if system == "Windows":
             proc = self._run_powershell(
@@ -1267,7 +1336,6 @@ class NetworkIpSetupPage(QWidget):
             commands.append(["networksetup", "-setdnsservers", service] + config["dns_servers"])
 
         if os.geteuid() != 0:
-            quoted = " ".join(shlex.quote(arg) for command in commands for arg in command)
             script = " ".join(shlex.quote(arg) for arg in commands[0])
             script += " && " + " && ".join(
                 " ".join(shlex.quote(arg) for arg in command) for command in commands[1:]
